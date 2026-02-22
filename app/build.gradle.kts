@@ -30,32 +30,34 @@ android {
     }
 
     buildTypes {
-        buildTypes {
-            debug {
-                applicationIdSuffix = ".debug"
-                versionNameSuffix = "-debug"
+        debug {
+            applicationIdSuffix = ".debug"
+            versionNameSuffix = "-debug"
 
-                signingConfig = signingConfigs.getByName("release")
+            signingConfig = signingConfigs.getByName("release")
 
-                isJniDebuggable = true
+            isJniDebuggable = true
 
-                isMinifyEnabled = false
-            }
+            isMinifyEnabled = false
+        }
+        create("debug-local") {
+            isDebuggable = true
+            signingConfig = signingConfigs.getByName("debug")
+        }
 
-            release {
-                applicationIdSuffix = ".release"
-                versionNameSuffix = "-release"
+        release {
+            applicationIdSuffix = ".release"
+            versionNameSuffix = "-release"
 
-                signingConfig = signingConfigs.getByName("release")
+            signingConfig = signingConfigs.getByName("release")
 
-                isMinifyEnabled = true
-                isShrinkResources = true
+            isMinifyEnabled = true
+            isShrinkResources = true
 
-                proguardFiles(
+            proguardFiles(
                     getDefaultProguardFile("proguard-android-optimize.txt"),
                     "proguard-rules.pro"
-                )
-            }
+            )
         }
     }
     compileOptions {

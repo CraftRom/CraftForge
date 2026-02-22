@@ -1,25 +1,24 @@
 package com.craftforge.app.service
 
+import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withTimeoutOrNull
+import com.craftforge.app.MainActivity
+import kotlinx.coroutines.*
 
 class TweaksService : Service() {
 
     companion object {
-        private const val CHANNEL_ID = "craftforge_silent_tweaks_v2" // Змінив v2, щоб оновити налаштування каналу
+        private const val CHANNEL_ID = "craftforge_core_service_v3"
         private const val NOTIFICATION_ID = 1001
+        private const val EXECUTION_TIMEOUT = 30_000L
     }
 
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
@@ -33,19 +32,27 @@ class TweaksService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        val pendingIntent = PendingIntent.getActivity(
+            this, 0, Intent(this, MainActivity::class.java),
+            PendingIntent.FLAG_IMMUTABLE
+        )
+
         notificationBuilder = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("CraftForge")
-            .setContentText("System optimizations active")
+            .setContentTitle("CraftForge Engine")
+            .setContentText("Initializing optimization core...")
             .setSmallIcon(android.R.drawable.ic_menu_manage)
-            .setPriority(NotificationCompat.PRIORITY_MIN)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
-            .setSilent(true)
+            .setContentIntent(pendingIntent)
             .setOngoing(true)
+            .setSilent(true)
+            .setOnlyAlertOnce(true)
+            .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
 
         try {
             startForeground(NOTIFICATION_ID, notificationBuilder.build())
         } catch (e: Exception) {
-            e.printStackTrace()
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) e.printStackTrace()
         }
 
         serviceScope.launch {
@@ -56,10 +63,8 @@ class TweaksService : Service() {
     }
 
     private suspend fun applySystemTweaksWithProgress() {
-        val prefs = getSharedPreferences("TweaksPrefs", Context.MODE_PRIVATE)
+        val prefs = getSharedPreferences("TweaksPrefs", MODE_PRIVATE)
         val commands = mutableListOf<String>()
-
-        updateNotificationProgress("Applying profiles...", 1, 2)
 
         // ==========================================
         // 1. CPU Базові
@@ -150,14 +155,21 @@ class TweaksService : Service() {
             commands.add("echo $it > /proc/sys/net/ipv6/conf/default/disable_ipv6")
         }
 
-        // Виконання команд через один потік SU
         if (commands.isNotEmpty()) {
-            withTimeoutOrNull(15_000L) { // Трохи збільшив таймаут, бо команд стало більше
+            val total = commands.size
+            updateNotificationProgress("Forging system...", 0, total)
+
+            withTimeoutOrNull(EXECUTION_TIMEOUT) {
                 try {
+                    // Виконання всіх команд через один сеанс SU для швидкості
                     val process = Runtime.getRuntime().exec("su")
                     process.outputStream.bufferedWriter().use { writer ->
-                        commands.forEach { cmd ->
+                        commands.forEachIndexed { index, cmd ->
                             writer.write("$cmd\n")
+                            // Оновлюємо UI кожні 10 команд
+                            if (index % 10 == 0 || index == total - 1) {
+                                updateNotificationProgress("Applying tweaks...", index + 1, total)
+                            }
                         }
                         writer.write("exit\n")
                         writer.flush()
@@ -169,16 +181,19 @@ class TweaksService : Service() {
             }
         }
 
-        updateNotificationFinal("Optimizations active")
+        updateNotificationFinal("Optimizations Active & Protected")
     }
 
     private fun updateNotificationProgress(taskText: String, step: Int, totalSteps: Int) {
-        notificationBuilder.setContentText(taskText).setProgress(totalSteps, step, false)
+        notificationBuilder.setContentText("$taskText ($step/$totalSteps)")
+            .setProgress(totalSteps, step, false)
         notificationManager.notify(NOTIFICATION_ID, notificationBuilder.build())
     }
 
     private fun updateNotificationFinal(finalText: String) {
-        notificationBuilder.setContentText(finalText).setProgress(0, 0, false)
+        notificationBuilder.setContentText(finalText)
+            .setSubText("Hardware tuned successfully")
+            .setProgress(0, 0, false)
         notificationManager.notify(NOTIFICATION_ID, notificationBuilder.build())
     }
 
@@ -186,14 +201,19 @@ class TweaksService : Service() {
 
     override fun onDestroy() {
         super.onDestroy()
-        serviceScope.cancel()
+        serviceScope.cancel() // Зупинка всіх фонових процесів
     }
 
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(CHANNEL_ID, "Silent Tweaks", NotificationManager.IMPORTANCE_MIN).apply {
-                description = "Runs background optimizations without disturbing you"
+            val channel = NotificationChannel(
+                CHANNEL_ID,
+                "Core System Service",
+                NotificationManager.IMPORTANCE_LOW
+            ).apply {
+                description = "Critical service for hardware performance and kernel tweaks"
                 setShowBadge(false)
+                lockscreenVisibility = Notification.VISIBILITY_PUBLIC
             }
             notificationManager.createNotificationChannel(channel)
         }
