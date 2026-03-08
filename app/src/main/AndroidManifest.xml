@@ -39,7 +39,7 @@
         </activity>
 
         <activity
-            android:name=".ui.DeviceDetailActivity"
+            android:name=".DeviceDetailActivity"
             android:exported="false"
             android:label="Device Details">
         </activity>

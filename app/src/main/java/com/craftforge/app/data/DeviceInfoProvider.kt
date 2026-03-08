@@ -101,31 +101,32 @@ class DeviceInfoProvider(context: Context) {
         val displayInfo = getDisplayDetails()
         val cameraInfo = getCameraMegapixels()
         val tm = appContext.getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
+        val widevineInfo = getWidevineInfo()
 
         return StaticDeviceInfo(
             deviceName = getDeviceName(), model = Build.MODEL, manufacturer = Build.MANUFACTURER, brand = Build.BRAND,
             deviceCodename = Build.DEVICE, androidVersion = Build.VERSION.RELEASE, apiLevel = Build.VERSION.SDK_INT,
             securityPatch = Build.VERSION.SECURITY_PATCH,
             buildFingerprint = Build.FINGERPRINT, buildId = Build.ID, buildType = Build.TYPE,
-            socManufacturer = Build.SOC_MANUFACTURER, socModel = Build.SOC_MODEL, hardwareSku = Build.SKU, odmSku = Build.ODM_SKU,
+            socManufacturer = getSocManufacturerCompat(), socModel = getSocModelCompat(), hardwareSku = getHardwareSkuCompat(), odmSku = getOdmSkuCompat(),
             board = Build.BOARD, hardware = Build.HARDWARE,
             cpuArchitecture = Build.SUPPORTED_ABIS.firstOrNull() ?: System.getProperty("os.arch") ?: "Unknown",
             cpuCoreCount = Runtime.getRuntime().availableProcessors(), cpuMaxFrequencies = getCpuMaxFrequencies(),
             supportedAbis = Build.SUPPORTED_ABIS.toList(),
             ramTotalMb = getTotalRamMb(), isLowRamDevice = act.isLowRamDevice, internalTotalGb = getInternalTotalGb(),
-            simSupported = isSimSupported(), activeSimCount = tm.activeModemCount,
+            simSupported = isSimSupported(), activeSimCount = getActiveSimCountCompat(tm),
             isEsimSupported = appContext.packageManager.hasSystemFeature(PackageManager.FEATURE_TELEPHONY_EUICC),
             displayResolution = getDisplayResolution(), displayDensityDpi = getDisplayDensityDpi(),
             isHdrSupported = displayInfo.first, isWideColorGamutSupported = displayInfo.second, displayMultitouch = getMultitouchDetails(),
             gpuRenderer = gpu.first, gpuVendor = gpu.second, gpuOpenGlVersion = gpu.third, gpuVulkanVersion = getVulkanVersion(),
-            cameraHardwareLevel = getCameraHardwareLevel(), isConcurrentCameraSupported = appContext.packageManager.hasSystemFeature(PackageManager.FEATURE_CAMERA_CONCURRENT),
+            cameraHardwareLevel = getCameraHardwareLevel(), isConcurrentCameraSupported = hasFeatureCompat(PackageManager.FEATURE_CAMERA_CONCURRENT, Build.VERSION_CODES.R),
             rearCameraMegapixels = cameraInfo.first, frontCameraMegapixels = cameraInfo.second,
             dalvikHeapSizeMb = act.memoryClass,
             bluetoothVersion = getBluetoothVersion(), timezone = TimeZone.getDefault().id, language = Locale.getDefault().toLanguageTag(),
             isNfcSupported = appContext.packageManager.hasSystemFeature(PackageManager.FEATURE_NFC),
             isWifiSupported = appContext.packageManager.hasSystemFeature(PackageManager.FEATURE_WIFI),
             isBluetoothSupported = appContext.packageManager.hasSystemFeature(PackageManager.FEATURE_BLUETOOTH),
-            isUwbSupported = appContext.packageManager.hasSystemFeature(PackageManager.FEATURE_UWB),
+            isUwbSupported = hasFeatureCompat(PackageManager.FEATURE_UWB, Build.VERSION_CODES.S),
             hasFingerprintSensor = appContext.packageManager.hasSystemFeature(PackageManager.FEATURE_FINGERPRINT),
             sensorCount = getSensorCount(), kernelVersion = System.getProperty("os.version"), miuiVersion = getUiRomName(),
             isRooted = isDeviceRooted, rootStatus = getRootManagerName(), isTrebleSupported = getSystemProperty("ro.treble.enabled", "false") == "true",
@@ -134,16 +135,15 @@ class DeviceInfoProvider(context: Context) {
             isDynamicPartitions = checkIsDynamicPartitions(),
             isRetrofitDynamicPartitions = getSystemProperty("ro.boot.dynamic_partitions_retrofit") == "true",
             virtualAbStatus = getVirtualAbStatus(), isSystemAsRoot = checkIsSystemAsRoot(),
-            widevineVendor = getWidevineInfo()["vendor"]!!,
-            widevineVersion = getWidevineInfo()["version"]!!,
-            widevineDescription = getWidevineInfo()["description"]!!,
-            widevineAlgorithms = getWidevineInfo()["algorithms"]!!,
-            widevineSecurityLevel = getWidevineInfo()["securityLevel"]!!,
-            widevineMaxHdcp = getWidevineInfo()["maxHdcp"]!!
+            widevineVendor = widevineInfo["vendor"] ?: "Unknown",
+            widevineVersion = widevineInfo["version"] ?: "Unknown",
+            widevineDescription = widevineInfo["description"] ?: "Unknown",
+            widevineAlgorithms = widevineInfo["algorithms"] ?: "Unknown",
+            widevineSecurityLevel = widevineInfo["securityLevel"] ?: "Unknown",
+            widevineMaxHdcp = widevineInfo["maxHdcp"] ?: "Unknown"
         )
     }
 
-    @RequiresApi(Build.VERSION_CODES.S)
     @RequiresPermission(Manifest.permission.READ_PHONE_STATE)
     fun getDynamicDeviceInfo(): DynamicDeviceInfo {
         val bm = appContext.getSystemService(Context.BATTERY_SERVICE) as BatteryManager
@@ -188,7 +188,7 @@ class DeviceInfoProvider(context: Context) {
             batteryTemperatureC = temp, batteryVoltageMv = voltage, batteryCurrentMa = currentMa, batteryPowerWatts = powerWatts,
             chargingSource = chargingSource, isCharging = isCharging, isFastCharging = powerWatts >= 10.0,
             batteryCycleCount = getBatteryCycleCount(bm, intent),
-            chargeTimeRemainingMs = bm.computeChargeTimeRemaining(),
+            chargeTimeRemainingMs = getChargeTimeRemainingCompat(bm),
             networkOperator = getNetworkOperatorName(), networkType = getReadableNetworkType(),
             ipv4Address = ipAddresses.first, ipv6Address = ipAddresses.second,
             displayRefreshRate = getDisplayRefreshRate(),
@@ -198,6 +198,28 @@ class DeviceInfoProvider(context: Context) {
             systemUptimeMs = SystemClock.elapsedRealtime()
         )
     }
+
+
+    private fun getSocManufacturerCompat(): String =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) Build.SOC_MANUFACTURER else "Unknown"
+
+    private fun getSocModelCompat(): String =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) Build.SOC_MODEL else "Unknown"
+
+    private fun getHardwareSkuCompat(): String =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) Build.SKU else "Unknown"
+
+    private fun getOdmSkuCompat(): String =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) Build.ODM_SKU else "Unknown"
+
+    private fun getActiveSimCountCompat(tm: TelephonyManager): Int =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) tm.activeModemCount else if (isSimSupported()) 1 else 0
+
+    private fun hasFeatureCompat(feature: String, minApi: Int): Boolean =
+        Build.VERSION.SDK_INT >= minApi && appContext.packageManager.hasSystemFeature(feature)
+
+    private fun getChargeTimeRemainingCompat(bm: BatteryManager): Long =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) bm.computeChargeTimeRemaining() else -1L
 
     // ================= ADVANCED SYSTEM CHECKS =================
 
@@ -645,8 +667,17 @@ class DeviceInfoProvider(context: Context) {
 
     private fun getDisplayResolution(): String {
         val wm = appContext.getSystemService(Context.WINDOW_SERVICE) as WindowManager
-        val bounds = wm.currentWindowMetrics.bounds
-        return "${bounds.width()}x${bounds.height()}"
+        return try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                val bounds = wm.currentWindowMetrics.bounds
+                "${bounds.width()}x${bounds.height()}"
+            } else {
+                @Suppress("DEPRECATION")
+                wm.defaultDisplay?.let { "${it.width}x${it.height}" } ?: "Unknown"
+            }
+        } catch (e: Exception) {
+            "Unknown"
+        }
     }
 
     private fun getDisplayDensityDpi(): Int = appContext.resources.displayMetrics.densityDpi

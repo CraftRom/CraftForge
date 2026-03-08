@@ -12,7 +12,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.tooling.preview.Preview
-import com.craftforge.app.ui.DeviceDetailActivity
+import com.craftforge.app.DeviceDetailActivity
+
 import com.craftforge.app.ui.theme.InfoCardUniversal
 
 @Composable
@@ -23,15 +24,17 @@ fun HomeScreen() {
     }
 
     val deviceInfo = remember {
+        val socInfo = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            "${Build.SOC_MANUFACTURER}-${Build.SOC_MODEL}"
+        } else {
+            "unknown"
+        }
+
         listOf(
             "Device" to Build.DEVICE,
             "Android" to "${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})",
             "Security patch" to (Build.VERSION.SECURITY_PATCH ?: "Unknown"),
-            "Board" to if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                "${Build.BOARD} (${Build.SOC_MANUFACTURER}-${Build.SOC_MODEL})"
-            } else {
-                "${Build.BOARD} (unknown)"
-            },
+            "Board" to "${Build.BOARD} ($socInfo)",
             "Kernel" to (System.getProperty("os.version") ?: "Unknown")
         )
     }

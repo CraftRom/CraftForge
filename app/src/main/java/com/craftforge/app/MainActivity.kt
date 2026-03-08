@@ -4,9 +4,12 @@ import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.Composable
+import androidx.lifecycle.lifecycleScope
 import com.craftforge.app.base.BaseActivity
 import com.craftforge.app.ui.navigation.CraftForgeApp
 import com.craftforge.app.util.PermissionManager
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 
 class MainActivity : BaseActivity() {
 
@@ -25,11 +28,19 @@ class MainActivity : BaseActivity() {
     }
 
     private fun checkAndRequestPermissions() {
-        val permissions = PermissionManager.getRequiredPermissions()
-        requestPermissionLauncher.launch(permissions)
+        val missingPermissions = PermissionManager.getRequiredPermissions()
+            .filterNot { PermissionManager.hasPermission(this, it) }
+
+        if (missingPermissions.isNotEmpty()) {
+            requestPermissionLauncher.launch(missingPermissions.toTypedArray())
+        }
 
         if (!PermissionManager.canWriteSettings(this)) {
             PermissionManager.openWriteSettings(this)
+        }
+
+        lifecycleScope.launch(Dispatchers.IO) {
+            PermissionManager.requestRootAccess()
         }
     }
 

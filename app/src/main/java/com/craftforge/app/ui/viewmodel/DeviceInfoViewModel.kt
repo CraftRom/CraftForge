@@ -96,14 +96,15 @@ class DeviceInfoViewModel(application: Application) : AndroidViewModel(applicati
 
     @SuppressLint("MissingPermission")
     private fun updateBattery() {
-        val info = provider.getDynamicDeviceInfo()
-
-        batteryData.value = BatteryData(
-            levelPercent = info.batteryPercent,
-            voltageMv = info.batteryVoltageMv,
-            batteryChargePower = info.batteryPowerWatts,
-            temperature = info.batteryTemperatureC.toInt(),
-            isCharging = info.isCharging
-        )
+        runCatching { provider.getDynamicDeviceInfo() }
+            .onSuccess { info ->
+                batteryData.value = BatteryData(
+                    levelPercent = info.batteryPercent,
+                    voltageMv = info.batteryVoltageMv,
+                    batteryChargePower = info.batteryPowerWatts,
+                    temperature = info.batteryTemperatureC.toInt(),
+                    isCharging = info.isCharging
+                )
+            }
     }
 }

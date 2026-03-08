@@ -3,11 +3,12 @@ package com.craftforge.app.util
 import android.Manifest
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
 import androidx.core.content.ContextCompat
-import android.content.pm.PackageManager
+import java.io.IOException
 
 object PermissionManager {
 
@@ -17,36 +18,48 @@ object PermissionManager {
     fun getRequiredPermissions(): Array<String> {
         val permissions = mutableListOf<String>()
 
-        // 1. Сповіщення (Android 13+)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             permissions.add(Manifest.permission.POST_NOTIFICATIONS)
         }
 
-        // 2. Bluetooth (Android 12+)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             permissions.add(Manifest.permission.BLUETOOTH_CONNECT)
         }
 
-        // 3. Стан мережі та оператора (getReadableNetworkType)
         permissions.add(Manifest.permission.READ_PHONE_STATE)
-
-        // 4. Wi-Fi та мережевий стан (getWifiSpeed, getWifiStandard)
         permissions.add(Manifest.permission.ACCESS_WIFI_STATE)
         permissions.add(Manifest.permission.ACCESS_NETWORK_STATE)
-
-        // 5. Камери (getCameraMegapixels)
         permissions.add(Manifest.permission.CAMERA)
 
         return permissions.toTypedArray()
     }
 
     /**
+     * Запит Root-прав.
+     * Виконує команду 'su', що змушує Magisk/KernelSU показати діалогове вікно.
+     */
+    fun requestRootAccess(): Boolean {
+        return try {
+            val process = Runtime.getRuntime().exec("su")
+            process.outputStream.use {
+                it.write("exit\n".toByteArray())
+                it.flush()
+            }
+            process.waitFor() == 0
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    fun hasPermission(context: Context, permission: String): Boolean {
+        return ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED
+    }
+
+    /**
      * Перевірка, чи всі базові дозволи надані
      */
     fun hasAllPermissions(context: Context): Boolean {
-        return getRequiredPermissions().all {
-            ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
-        }
+        return getRequiredPermissions().all { hasPermission(context, it) }
     }
 
     /**
