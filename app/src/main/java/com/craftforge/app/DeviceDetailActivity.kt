@@ -22,11 +22,10 @@ class DeviceDetailActivity : ComponentActivity() {
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
-        if (granted) {
-            viewModel.loadData()
-        } else {
-            Toast.makeText(this, "READ_PHONE_STATE denied. Some device info will be unavailable.", Toast.LENGTH_SHORT).show()
+        if (!granted) {
+            Toast.makeText(this, "READ_PHONE_STATE denied. Telephony data may be limited, but device info will still load.", Toast.LENGTH_SHORT).show()
         }
+        viewModel.loadData()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {

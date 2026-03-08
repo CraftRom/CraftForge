@@ -7,7 +7,12 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.BatteryChargingFull
 import androidx.compose.material.icons.filled.Storage
-import androidx.compose.material3.*
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Icon
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -21,10 +26,12 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.craftforge.app.data.DeviceInfoItem
 import com.craftforge.app.data.models.BatteryData
-import com.craftforge.app.data.models.InfoCardTheme
 import com.craftforge.app.data.models.RamData
 import com.craftforge.app.data.models.StorageData
-import com.craftforge.app.ui.theme.*
+import com.craftforge.app.ui.theme.InfoCardStyles
+import com.craftforge.app.ui.theme.InfoRowStyled
+import com.craftforge.app.ui.theme.RamGraphCompose
+import com.craftforge.app.ui.theme.infoCardStyles
 
 @Composable
 fun InfoProgressBar(progress: Float, styles: InfoCardStyles, modifier: Modifier = Modifier) {
@@ -50,7 +57,6 @@ fun InfoBlock(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            // ДОДАНО: Рамка, ідентична до TweaksScreen
             .border(
                 width = 1.dp,
                 color = styles.accentColor.copy(alpha = 0.2f),
@@ -74,7 +80,7 @@ fun InfoBlock(
                     imageVector = it,
                     contentDescription = title,
                     tint = styles.accentColor,
-                    modifier = Modifier.size(32.dp)
+                    modifier = Modifier.size(20.dp)
                 )
             }
             Spacer(modifier = Modifier.width(12.dp))
@@ -95,7 +101,7 @@ fun InfoBlock(
 
 @Composable
 fun RamInfoBlock(data: RamData, styles: InfoCardStyles = infoCardStyles()) {
-    InfoBlock(title = "Random Access Memory", icon = null, contentPadding = styles.cardPadding) {
+    InfoBlock(title = "Random Access Memory", icon = null, contentPadding = styles.cardPadding, styles = styles) {
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -118,7 +124,9 @@ fun RamInfoBlock(data: RamData, styles: InfoCardStyles = infoCardStyles()) {
             RamGraphCompose(
                 history = data.history,
                 styles = styles,
-                modifier = Modifier.fillMaxWidth().height(80.dp)
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(80.dp)
             )
             Spacer(modifier = Modifier.height(4.dp))
             Text(
@@ -133,7 +141,7 @@ fun RamInfoBlock(data: RamData, styles: InfoCardStyles = infoCardStyles()) {
 
 @Composable
 fun StorageInfoBlock(data: StorageData, styles: InfoCardStyles = infoCardStyles()) {
-    val progress = if (data.totalGb > 0) (data.usedPercent / 100f) else 0f
+    val progress = if (data.totalGb > 0) data.usedPercent / 100f else 0f
     InfoBlock(title = "Internal Storage", icon = Icons.Default.Storage, styles = styles) {
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
             InfoProgressBar(progress = progress, styles = styles, modifier = Modifier.weight(1f))
@@ -184,12 +192,15 @@ fun BatteryInfoBlock(data: BatteryData, styles: InfoCardStyles = infoCardStyles(
 }
 
 @Composable
-fun HeadBlock(title: String, items: List<DeviceInfoItem>, styles: InfoCardStyles = infoCardStyles(), modifier: Modifier = Modifier) {
+fun HeadBlock(
+    title: String,
+    items: List<DeviceInfoItem>,
+    styles: InfoCardStyles = infoCardStyles(),
+    modifier: Modifier = Modifier
+) {
     Card(
         modifier = modifier
             .fillMaxWidth()
-            .padding(styles.cardPadding)
-            // ДОДАНО: Рамка навколо Card
             .border(
                 width = 1.dp,
                 color = styles.accentColor.copy(alpha = 0.2f),
@@ -198,7 +209,10 @@ fun HeadBlock(title: String, items: List<DeviceInfoItem>, styles: InfoCardStyles
         shape = RoundedCornerShape(styles.cardCornerRadius),
         colors = CardDefaults.cardColors(containerColor = styles.cardBackgroundColor)
     ) {
-        Column(modifier = Modifier.padding(styles.cardPadding), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Column(
+            modifier = Modifier.padding(styles.cardPadding),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
             Text(
                 text = title,
                 color = styles.titleTextColor,
@@ -220,18 +234,56 @@ fun HeadBlock(title: String, items: List<DeviceInfoItem>, styles: InfoCardStyles
 }
 
 @Composable
-fun DeviceInfoRow(item: DeviceInfoItem, styles: InfoCardStyles = infoCardStyles()) { // Замінив theme на styles
-    Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
-        Text(text = item.label, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f), fontSize = 12.sp)
-        val permissionRequiredMsg = "READ_PHONE_STATE permission required"
-        val valueColor = when {
-            item.isError -> Color(0xFFFF5252)
-            item.value == permissionRequiredMsg -> Color(0xFFFFC285)
-            else -> MaterialTheme.colorScheme.onSurface
+fun DeviceInfoRow(
+    item: DeviceInfoItem,
+    styles: InfoCardStyles = infoCardStyles(),
+    showDivider: Boolean = true
+) {
+    val permissionMessages = setOf("READ_PHONE_STATE permission required", "Permission Denied")
+    val valueColor = when {
+        item.isError -> MaterialTheme.colorScheme.error
+        item.value in permissionMessages -> Color(0xFFFFC285)
+        else -> styles.valueTextColor
+    }
+
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.Top
+        ) {
+            Column(modifier = Modifier.weight(0.42f)) {
+                Text(
+                    text = item.label,
+                    color = styles.labelTextColor,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Medium,
+                    lineHeight = 16.sp
+                )
+            }
+            Column(
+                modifier = Modifier.weight(0.58f),
+                horizontalAlignment = Alignment.End
+            ) {
+                Text(
+                    text = item.value,
+                    color = valueColor,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    lineHeight = 19.sp
+                )
+            }
         }
-        Text(text = item.value, color = valueColor, fontSize = 14.sp, fontWeight = FontWeight.Medium)
-        Spacer(
-            Modifier.fillMaxWidth().height(1.dp).background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.07f)).padding(top = 6.dp)
-        )
+        if (showDivider) {
+            Spacer(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp)
+                    .height(1.dp)
+                    .background(styles.accentColor.copy(alpha = 0.08f))
+            )
+        }
     }
 }

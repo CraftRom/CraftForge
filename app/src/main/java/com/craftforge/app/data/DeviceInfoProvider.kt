@@ -8,6 +8,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.hardware.Sensor
 import android.hardware.SensorManager
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
@@ -15,8 +16,8 @@ import android.hardware.display.DisplayManager
 import android.media.MediaDrm
 import android.net.ConnectivityManager
 import android.net.LinkProperties
-import android.net.NetworkCapabilities
 import android.net.wifi.WifiInfo
+import android.net.wifi.WifiManager
 import android.os.BatteryManager
 import android.os.Build
 import android.os.Environment
@@ -24,14 +25,17 @@ import android.os.PowerManager
 import android.os.StatFs
 import android.os.SystemClock
 import android.provider.Settings
+import android.telephony.TelephonyDisplayInfo
 import android.telephony.TelephonyManager
 import android.view.Display
 import android.view.WindowManager
-import androidx.annotation.RequiresApi
 import androidx.annotation.RequiresPermission
 import java.io.File
+import java.lang.reflect.Method
 import java.net.Inet4Address
 import java.net.Inet6Address
+import java.net.NetworkInterface
+import java.util.Collections
 import java.util.Locale
 import java.util.TimeZone
 import java.util.UUID
@@ -40,228 +44,518 @@ import kotlin.math.roundToInt
 
 // ================= DATA CLASSES =================
 data class StaticDeviceInfo(
-    val deviceName: String, val model: String, val manufacturer: String, val brand: String,
-    val deviceCodename: String, val androidVersion: String, val apiLevel: Int, val securityPatch: String,
-    val buildFingerprint: String, val buildId: String, val buildType: String,
-    val socManufacturer: String, val socModel: String,
-    val hardwareSku: String, val odmSku: String,
-    val board: String?, val hardware: String?, val cpuArchitecture: String, val cpuCoreCount: Int,
-    val cpuMaxFrequencies: List<Int>, val supportedAbis: List<String>, val ramTotalMb: Long, val isLowRamDevice: Boolean, val internalTotalGb: Long,
-    val simSupported: Boolean, val activeSimCount: Int, val isEsimSupported: Boolean,
-    val displayResolution: String, val displayDensityDpi: Int,
-    val isHdrSupported: Boolean, val isWideColorGamutSupported: Boolean, val displayMultitouch: String,
-    val gpuRenderer: String, val gpuVendor: String, val gpuOpenGlVersion: String, val gpuVulkanVersion: String?,
-    val cameraHardwareLevel: String, val isConcurrentCameraSupported: Boolean,
-    val rearCameraMegapixels: String, val frontCameraMegapixels: String,
+    val deviceName: String,
+    val model: String,
+    val manufacturer: String,
+    val brand: String,
+    val deviceCodename: String,
+    val androidVersion: String,
+    val apiLevel: Int,
+    val securityPatch: String,
+    val buildFingerprint: String,
+    val buildId: String,
+    val buildType: String,
+    val socManufacturer: String,
+    val socModel: String,
+    val hardwareSku: String,
+    val odmSku: String,
+    val board: String?,
+    val hardware: String?,
+    val cpuArchitecture: String,
+    val cpuCoreCount: Int,
+    val cpuMaxFrequencies: List<Int>,
+    val supportedAbis: List<String>,
+    val ramTotalMb: Long,
+    val isLowRamDevice: Boolean,
+    val internalTotalGb: Long,
+    val simSupported: Boolean,
+    val activeSimCount: Int,
+    val isEsimSupported: Boolean,
+    val displayResolution: String,
+    val displayDensityDpi: Int,
+    val isHdrSupported: Boolean,
+    val isWideColorGamutSupported: Boolean,
+    val displayMultitouch: String,
+    val gpuRenderer: String,
+    val gpuVendor: String,
+    val gpuOpenGlVersion: String,
+    val gpuVulkanVersion: String?,
+    val cameraHardwareLevel: String,
+    val isConcurrentCameraSupported: Boolean,
+    val rearCameraMegapixels: String,
+    val frontCameraMegapixels: String,
     val widevineVendor: String,
     val widevineVersion: String,
     val widevineDescription: String,
     val widevineAlgorithms: String,
     val widevineSecurityLevel: String,
-    val widevineMaxHdcp: String, val dalvikHeapSizeMb: Int,
-    val bluetoothVersion: String?, val timezone: String, val language: String,
-    val isNfcSupported: Boolean, val isWifiSupported: Boolean, val isBluetoothSupported: Boolean,
-    val isUwbSupported: Boolean, val hasFingerprintSensor: Boolean, val sensorCount: Int, val kernelVersion: String?,
-    val miuiVersion: String, val isRooted: Boolean, val rootStatus: String, val isTrebleSupported: Boolean,
-    val isSeamlessUpdateSupported: Boolean, val isDynamicPartitions: Boolean, val isRetrofitDynamicPartitions: Boolean,
-    val virtualAbStatus: String, val isSystemAsRoot: Boolean, val isGsiDevice: Boolean, val isGkiDevice: Boolean
+    val widevineMaxHdcp: String,
+    val dalvikHeapSizeMb: Int,
+    val bluetoothVersion: String?,
+    val timezone: String,
+    val language: String,
+    val isNfcSupported: Boolean,
+    val isWifiSupported: Boolean,
+    val isBluetoothSupported: Boolean,
+    val isUwbSupported: Boolean,
+    val hasFingerprintSensor: Boolean,
+    val sensorCount: Int,
+    val kernelVersion: String?,
+    val miuiVersion: String,
+    val romFamily: String,
+    val romVersion: String,
+    val romType: String,
+    val isRooted: Boolean,
+    val rootStatus: String,
+    val isTrebleSupported: Boolean,
+    val isSeamlessUpdateSupported: Boolean,
+    val isDynamicPartitions: Boolean,
+    val isRetrofitDynamicPartitions: Boolean,
+    val virtualAbStatus: String,
+    val isSystemAsRoot: Boolean,
+    val gsiStatus: String,
+    val gsiEvidence: String,
+    val gkiStatus: String,
+    val gkiEvidence: String,
+    val isGsiDevice: Boolean,
+    val isGkiDevice: Boolean
 )
 
 data class DynamicDeviceInfo(
-    val ramUsedMb: Long, val ramFreeMb: Long, val internalFreeGb: Long,
-    val batteryPercent: Int, val batteryStatus: String, val batteryHealth: String, val batteryTechnology: String,
-    val batteryTemperatureC: Float, val batteryVoltageMv: Int, val batteryCurrentMa: Int,
-    val batteryPowerWatts: Double, val chargingSource: String, val isCharging: Boolean,
-    val isFastCharging: Boolean, val batteryCycleCount: Int, val chargeTimeRemainingMs: Long,
-    val networkOperator: String?, val networkType: String?,
-    val ipv4Address: String, val ipv6Address: String,
+    val ramUsedMb: Long,
+    val ramFreeMb: Long,
+    val internalFreeGb: Long,
+    val batteryPercent: Int,
+    val batteryStatus: String,
+    val batteryHealth: String,
+    val batteryTechnology: String,
+    val batteryTemperatureC: Float,
+    val batteryVoltageMv: Int,
+    val batteryCurrentMa: Int,
+    val batteryPowerWatts: Double,
+    val chargingSource: String,
+    val isCharging: Boolean,
+    val isFastCharging: Boolean,
+    val batteryCycleCount: Int,
+    val chargeTimeRemainingMs: Long,
+    val networkOperator: String?,
+    val networkType: String?,
+    val ipv4Address: String,
+    val ipv6Address: String,
     val displayRefreshRate: Int,
-    val wifiLinkSpeedMbps: Int?, val wifiStandard: String?,
-    val cpuFrequencies: List<Int>, val cpuGovernor: String?, val cpuTemperatureC: Float?,
-    val thermalThrottlingStatus: String, val systemUptimeMs: Long
+    val wifiLinkSpeedMbps: Int?,
+    val wifiStandard: String?,
+    val cpuFrequencies: List<Int>,
+    val cpuGovernor: String?,
+    val cpuTemperatureC: Float?,
+    val thermalThrottlingStatus: String,
+    val systemUptimeMs: Long
+)
+
+private data class RomInfo(
+    val displayName: String,
+    val family: String,
+    val version: String,
+    val type: String
+)
+
+private data class WidevineInfo(
+    val vendor: String,
+    val version: String,
+    val description: String,
+    val algorithms: String,
+    val securityLevel: String,
+    val maxHdcp: String
+)
+
+private data class CameraSummary(
+    val hardwareLevel: String,
+    val rearMegapixels: String,
+    val frontMegapixels: String
+)
+
+private data class CompatibilityResult(
+    val detected: Boolean,
+    val status: String,
+    val evidence: String
 )
 
 class DeviceInfoProvider(context: Context) {
     private val appContext = context.applicationContext
+    private val activityManager by lazy(LazyThreadSafetyMode.NONE) {
+        appContext.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+    }
+    private val packageManager by lazy(LazyThreadSafetyMode.NONE) { appContext.packageManager }
+    private val telephonyManager by lazy(LazyThreadSafetyMode.NONE) {
+        appContext.getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
+    }
 
     private var sysfsCpuAccessDenied = false
     private var sysfsBatteryCyclesDenied = false
     private var sysfsBatteryCurrentDenied = false
     private var sysfsCpuTempDenied = false
-    private var cachedCameraLevel: String? = null
 
-    // Виконується лише один раз
-    private val isDeviceRooted: Boolean by lazy { checkRoot() }
+    private val systemPropertyCache = mutableMapOf<String, String>()
+    private val readableNodeCache = mutableMapOf<String, String?>()
+    private val systemPropertiesGetMethod: Method? by lazy(LazyThreadSafetyMode.NONE) {
+        runCatching {
+            Class.forName("android.os.SystemProperties")
+                .getMethod("get", String::class.java, String::class.java)
+        }.getOrNull()
+    }
 
-    // ================= PUBLIC METHODS =================
+    private val isDeviceRooted: Boolean by lazy(LazyThreadSafetyMode.NONE) { detectRoot() }
+    private val rootManagerNameCache: String by lazy(LazyThreadSafetyMode.NONE) { detectRootManagerName() }
+    private val widevineInfoCache: WidevineInfo by lazy(LazyThreadSafetyMode.NONE) { readWidevineInfo() }
+    private val romInfoCache: RomInfo by lazy(LazyThreadSafetyMode.NONE) { detectRomInfo() }
+    private val kernelVersionCache: String by lazy(LazyThreadSafetyMode.NONE) { readKernelVersion() }
+    private val cameraSummaryCache: CameraSummary by lazy(LazyThreadSafetyMode.NONE) { readCameraSummary() }
+    private val cpuCurrentFreqPaths: List<String> by lazy(LazyThreadSafetyMode.NONE) {
+        discoverCpuFreqPaths("scaling_cur_freq")
+    }
+    private val cpuMaxFreqPaths: List<String> by lazy(LazyThreadSafetyMode.NONE) {
+        discoverCpuFreqPaths("cpuinfo_max_freq")
+    }
+
     @RequiresPermission(Manifest.permission.READ_PHONE_STATE)
     fun getStaticDeviceInfo(): StaticDeviceInfo {
-        val act = appContext.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
         val gpu = getGpuInfo()
         val displayInfo = getDisplayDetails()
-        val cameraInfo = getCameraMegapixels()
-        val tm = appContext.getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
-        val widevineInfo = getWidevineInfo()
+        val romInfo = romInfoCache
+        val widevineInfo = widevineInfoCache
+        val gsiInfo = analyzeGsiInfo()
+        val gkiInfo = analyzeGkiInfo()
 
         return StaticDeviceInfo(
-            deviceName = getDeviceName(), model = Build.MODEL, manufacturer = Build.MANUFACTURER, brand = Build.BRAND,
-            deviceCodename = Build.DEVICE, androidVersion = Build.VERSION.RELEASE, apiLevel = Build.VERSION.SDK_INT,
-            securityPatch = Build.VERSION.SECURITY_PATCH,
-            buildFingerprint = Build.FINGERPRINT, buildId = Build.ID, buildType = Build.TYPE,
-            socManufacturer = getSocManufacturerCompat(), socModel = getSocModelCompat(), hardwareSku = getHardwareSkuCompat(), odmSku = getOdmSkuCompat(),
-            board = Build.BOARD, hardware = Build.HARDWARE,
-            cpuArchitecture = Build.SUPPORTED_ABIS.firstOrNull() ?: System.getProperty("os.arch") ?: "Unknown",
-            cpuCoreCount = Runtime.getRuntime().availableProcessors(), cpuMaxFrequencies = getCpuMaxFrequencies(),
+            deviceName = getDeviceName(),
+            model = Build.MODEL.orUnknown(),
+            manufacturer = Build.MANUFACTURER.orUnknown(),
+            brand = Build.BRAND.orUnknown(),
+            deviceCodename = Build.DEVICE.orUnknown(),
+            androidVersion = Build.VERSION.RELEASE.orUnknown(),
+            apiLevel = Build.VERSION.SDK_INT,
+            securityPatch = Build.VERSION.SECURITY_PATCH.orUnknown(),
+            buildFingerprint = Build.FINGERPRINT.orUnknown(),
+            buildId = Build.ID.orUnknown(),
+            buildType = Build.TYPE.orUnknown(),
+            socManufacturer = getSocManufacturerCompat(),
+            socModel = getSocModelCompat(),
+            hardwareSku = getHardwareSkuCompat(),
+            odmSku = getOdmSkuCompat(),
+            board = Build.BOARD,
+            hardware = Build.HARDWARE,
+            cpuArchitecture = Build.SUPPORTED_ABIS.firstOrNull().orUnknown(System.getProperty("os.arch")),
+            cpuCoreCount = Runtime.getRuntime().availableProcessors(),
+            cpuMaxFrequencies = getCpuMaxFrequencies(),
             supportedAbis = Build.SUPPORTED_ABIS.toList(),
-            ramTotalMb = getTotalRamMb(), isLowRamDevice = act.isLowRamDevice, internalTotalGb = getInternalTotalGb(),
-            simSupported = isSimSupported(), activeSimCount = getActiveSimCountCompat(tm),
-            isEsimSupported = appContext.packageManager.hasSystemFeature(PackageManager.FEATURE_TELEPHONY_EUICC),
-            displayResolution = getDisplayResolution(), displayDensityDpi = getDisplayDensityDpi(),
-            isHdrSupported = displayInfo.first, isWideColorGamutSupported = displayInfo.second, displayMultitouch = getMultitouchDetails(),
-            gpuRenderer = gpu.first, gpuVendor = gpu.second, gpuOpenGlVersion = gpu.third, gpuVulkanVersion = getVulkanVersion(),
-            cameraHardwareLevel = getCameraHardwareLevel(), isConcurrentCameraSupported = hasFeatureCompat(PackageManager.FEATURE_CAMERA_CONCURRENT, Build.VERSION_CODES.R),
-            rearCameraMegapixels = cameraInfo.first, frontCameraMegapixels = cameraInfo.second,
-            dalvikHeapSizeMb = act.memoryClass,
-            bluetoothVersion = getBluetoothVersion(), timezone = TimeZone.getDefault().id, language = Locale.getDefault().toLanguageTag(),
-            isNfcSupported = appContext.packageManager.hasSystemFeature(PackageManager.FEATURE_NFC),
-            isWifiSupported = appContext.packageManager.hasSystemFeature(PackageManager.FEATURE_WIFI),
-            isBluetoothSupported = appContext.packageManager.hasSystemFeature(PackageManager.FEATURE_BLUETOOTH),
+            ramTotalMb = getTotalRamMb(),
+            isLowRamDevice = activityManager.isLowRamDevice,
+            internalTotalGb = getInternalTotalGb(),
+            simSupported = isSimSupported(),
+            activeSimCount = getActiveSimCountCompat(telephonyManager),
+            isEsimSupported = packageManager.hasSystemFeature(PackageManager.FEATURE_TELEPHONY_EUICC),
+            displayResolution = getDisplayResolution(),
+            displayDensityDpi = getDisplayDensityDpi(),
+            isHdrSupported = displayInfo.first,
+            isWideColorGamutSupported = displayInfo.second,
+            displayMultitouch = getMultitouchDetails(),
+            gpuRenderer = gpu.first,
+            gpuVendor = gpu.second,
+            gpuOpenGlVersion = gpu.third,
+            gpuVulkanVersion = getVulkanVersion(),
+            cameraHardwareLevel = cameraSummaryCache.hardwareLevel,
+            isConcurrentCameraSupported = hasFeatureCompat(PackageManager.FEATURE_CAMERA_CONCURRENT, Build.VERSION_CODES.R),
+            rearCameraMegapixels = cameraSummaryCache.rearMegapixels,
+            frontCameraMegapixels = cameraSummaryCache.frontMegapixels,
+            widevineVendor = widevineInfo.vendor,
+            widevineVersion = widevineInfo.version,
+            widevineDescription = widevineInfo.description,
+            widevineAlgorithms = widevineInfo.algorithms,
+            widevineSecurityLevel = widevineInfo.securityLevel,
+            widevineMaxHdcp = widevineInfo.maxHdcp,
+            dalvikHeapSizeMb = activityManager.memoryClass,
+            bluetoothVersion = getBluetoothVersion(),
+            timezone = TimeZone.getDefault().id,
+            language = Locale.getDefault().toLanguageTag(),
+            isNfcSupported = packageManager.hasSystemFeature(PackageManager.FEATURE_NFC),
+            isWifiSupported = packageManager.hasSystemFeature(PackageManager.FEATURE_WIFI),
+            isBluetoothSupported = packageManager.hasSystemFeature(PackageManager.FEATURE_BLUETOOTH),
             isUwbSupported = hasFeatureCompat(PackageManager.FEATURE_UWB, Build.VERSION_CODES.S),
-            hasFingerprintSensor = appContext.packageManager.hasSystemFeature(PackageManager.FEATURE_FINGERPRINT),
-            sensorCount = getSensorCount(), kernelVersion = System.getProperty("os.version"), miuiVersion = getUiRomName(),
-            isRooted = isDeviceRooted, rootStatus = getRootManagerName(), isTrebleSupported = getSystemProperty("ro.treble.enabled", "false") == "true",
+            hasFingerprintSensor = packageManager.hasSystemFeature(PackageManager.FEATURE_FINGERPRINT),
+            sensorCount = getSensorCount(),
+            kernelVersion = kernelVersionCache,
+            miuiVersion = romInfo.displayName,
+            romFamily = romInfo.family,
+            romVersion = romInfo.version,
+            romType = romInfo.type,
+            isRooted = isDeviceRooted,
+            rootStatus = rootManagerNameCache,
+            isTrebleSupported = getSystemProperty("ro.treble.enabled", "false") == "true",
             isSeamlessUpdateSupported = checkIsSeamlessUpdateSupported(),
-            isGsiDevice = checkIsGsiAdvanced(), isGkiDevice = checkIsGkiAdvanced(),
             isDynamicPartitions = checkIsDynamicPartitions(),
             isRetrofitDynamicPartitions = getSystemProperty("ro.boot.dynamic_partitions_retrofit") == "true",
-            virtualAbStatus = getVirtualAbStatus(), isSystemAsRoot = checkIsSystemAsRoot(),
-            widevineVendor = widevineInfo["vendor"] ?: "Unknown",
-            widevineVersion = widevineInfo["version"] ?: "Unknown",
-            widevineDescription = widevineInfo["description"] ?: "Unknown",
-            widevineAlgorithms = widevineInfo["algorithms"] ?: "Unknown",
-            widevineSecurityLevel = widevineInfo["securityLevel"] ?: "Unknown",
-            widevineMaxHdcp = widevineInfo["maxHdcp"] ?: "Unknown"
+            virtualAbStatus = getVirtualAbStatus(),
+            isSystemAsRoot = checkIsSystemAsRoot(),
+            gsiStatus = gsiInfo.status,
+            gsiEvidence = gsiInfo.evidence,
+            gkiStatus = gkiInfo.status,
+            gkiEvidence = gkiInfo.evidence,
+            isGsiDevice = gsiInfo.detected,
+            isGkiDevice = gkiInfo.detected
         )
     }
 
     @RequiresPermission(Manifest.permission.READ_PHONE_STATE)
     fun getDynamicDeviceInfo(): DynamicDeviceInfo {
-        val bm = appContext.getSystemService(Context.BATTERY_SERVICE) as BatteryManager
-        val intent = appContext.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+        val batteryManager = appContext.getSystemService(Context.BATTERY_SERVICE) as BatteryManager
+        val batteryIntent = appContext.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
 
-        val level = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
-        val voltage = intent?.getIntExtra(BatteryManager.EXTRA_VOLTAGE, -1) ?: -1
-        val temp = (intent?.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, -1) ?: -1).let { if (it != -1) it / 10f else -1f }
-        val technology = intent?.getStringExtra(BatteryManager.EXTRA_TECHNOLOGY) ?: "Unknown"
-        val currentMa = getBatteryCurrentMa(bm)
+        val batteryPercent = batteryManager.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
+            .takeIf { it in 0..100 } ?: -1
+        val batteryVoltageMv = batteryIntent?.getIntExtra(BatteryManager.EXTRA_VOLTAGE, -1) ?: -1
+        val batteryTemperatureC = (batteryIntent?.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, -1) ?: -1)
+            .let { if (it >= 0) it / 10f else -1f }
+        val batteryTechnology = batteryIntent?.getStringExtra(BatteryManager.EXTRA_TECHNOLOGY).orUnknown()
+        val batteryCurrentMa = getBatteryCurrentMa(batteryManager)
 
-        val statusRaw = intent?.getIntExtra(BatteryManager.EXTRA_STATUS, -1)
-        val isCharging = statusRaw == BatteryManager.BATTERY_STATUS_CHARGING || statusRaw == BatteryManager.BATTERY_STATUS_FULL
+        val batteryStatusRaw = batteryIntent?.getIntExtra(BatteryManager.EXTRA_STATUS, -1) ?: -1
+        val isCharging = batteryStatusRaw == BatteryManager.BATTERY_STATUS_CHARGING ||
+            batteryStatusRaw == BatteryManager.BATTERY_STATUS_FULL
 
-        val status = when {
-            isCharging && statusRaw == BatteryManager.BATTERY_STATUS_FULL -> "full"
-            isCharging -> "charging"
-            currentMa > 0 && !isCharging -> "discharging"
-            else -> "not charging"
+        val batteryStatus = when (batteryStatusRaw) {
+            BatteryManager.BATTERY_STATUS_CHARGING -> "Charging"
+            BatteryManager.BATTERY_STATUS_DISCHARGING -> "Discharging"
+            BatteryManager.BATTERY_STATUS_FULL -> "Full"
+            BatteryManager.BATTERY_STATUS_NOT_CHARGING -> "Not Charging"
+            else -> "Unknown"
         }
 
-        val health = when (intent?.getIntExtra(BatteryManager.EXTRA_HEALTH, -1)) {
-            BatteryManager.BATTERY_HEALTH_GOOD -> "good"; BatteryManager.BATTERY_HEALTH_OVERHEAT -> "overheat"
-            BatteryManager.BATTERY_HEALTH_DEAD -> "dead"; BatteryManager.BATTERY_HEALTH_COLD -> "cold"
-            else -> "unknown"
+        val batteryHealth = when (batteryIntent?.getIntExtra(BatteryManager.EXTRA_HEALTH, -1)) {
+            BatteryManager.BATTERY_HEALTH_GOOD -> "Good"
+            BatteryManager.BATTERY_HEALTH_OVERHEAT -> "Overheat"
+            BatteryManager.BATTERY_HEALTH_DEAD -> "Dead"
+            BatteryManager.BATTERY_HEALTH_OVER_VOLTAGE -> "Over Voltage"
+            BatteryManager.BATTERY_HEALTH_UNSPECIFIED_FAILURE -> "Failure"
+            BatteryManager.BATTERY_HEALTH_COLD -> "Cold"
+            else -> "Unknown"
         }
 
-        val chargingSource = when (intent?.getIntExtra(BatteryManager.EXTRA_PLUGGED, -1)) {
-            BatteryManager.BATTERY_PLUGGED_USB -> "USB"; BatteryManager.BATTERY_PLUGGED_AC -> "AC"
-            BatteryManager.BATTERY_PLUGGED_WIRELESS -> "Wireless"; else -> "Battery"
+        val chargingSource = when (batteryIntent?.getIntExtra(BatteryManager.EXTRA_PLUGGED, -1)) {
+            BatteryManager.BATTERY_PLUGGED_USB -> "USB"
+            BatteryManager.BATTERY_PLUGGED_AC -> "AC"
+            BatteryManager.BATTERY_PLUGGED_WIRELESS -> "Wireless"
+            else -> "Battery"
         }
 
-        val powerWatts = if (isCharging && currentMa > 0 && voltage > 0) {
-            ((currentMa.toDouble() / 1000.0) * (voltage.toDouble() / 1000.0) * 100).roundToInt() / 100.0
-        } else 0.0
+        val batteryPowerWatts = if (isCharging && batteryCurrentMa > 0 && batteryVoltageMv > 0) {
+            ((batteryCurrentMa.toDouble() / 1000.0) * (batteryVoltageMv.toDouble() / 1000.0) * 100.0).roundToInt() / 100.0
+        } else {
+            0.0
+        }
 
-        val ipAddresses = getNetworkIpAddresses()
+        val (ipv4Address, ipv6Address) = getNetworkIpAddresses()
 
         return DynamicDeviceInfo(
-            ramUsedMb = getUsedRamMb(), ramFreeMb = getFreeRamMb(), internalFreeGb = getInternalFreeGb(),
-            batteryPercent = level, batteryStatus = status, batteryHealth = health, batteryTechnology = technology,
-            batteryTemperatureC = temp, batteryVoltageMv = voltage, batteryCurrentMa = currentMa, batteryPowerWatts = powerWatts,
-            chargingSource = chargingSource, isCharging = isCharging, isFastCharging = powerWatts >= 10.0,
-            batteryCycleCount = getBatteryCycleCount(bm, intent),
-            chargeTimeRemainingMs = getChargeTimeRemainingCompat(bm),
-            networkOperator = getNetworkOperatorName(), networkType = getReadableNetworkType(),
-            ipv4Address = ipAddresses.first, ipv6Address = ipAddresses.second,
+            ramUsedMb = getUsedRamMb(),
+            ramFreeMb = getFreeRamMb(),
+            internalFreeGb = getInternalFreeGb(),
+            batteryPercent = batteryPercent,
+            batteryStatus = batteryStatus,
+            batteryHealth = batteryHealth,
+            batteryTechnology = batteryTechnology,
+            batteryTemperatureC = batteryTemperatureC,
+            batteryVoltageMv = batteryVoltageMv,
+            batteryCurrentMa = batteryCurrentMa,
+            batteryPowerWatts = batteryPowerWatts,
+            chargingSource = chargingSource,
+            isCharging = isCharging,
+            isFastCharging = batteryPowerWatts >= 10.0,
+            batteryCycleCount = getBatteryCycleCount(batteryManager, batteryIntent) ?: -1,
+            chargeTimeRemainingMs = getChargeTimeRemainingCompat(batteryManager),
+            networkOperator = getNetworkOperatorName(),
+            networkType = getReadableNetworkType(),
+            ipv4Address = ipv4Address,
+            ipv6Address = ipv6Address,
             displayRefreshRate = getDisplayRefreshRate(),
-            wifiLinkSpeedMbps = getWifiSpeed(), wifiStandard = getWifiStandard(),
-            cpuFrequencies = getCpuFrequencies(), cpuGovernor = getCpuGovernor(), cpuTemperatureC = getCpuTemperature(),
+            wifiLinkSpeedMbps = getWifiSpeed(),
+            wifiStandard = getWifiStandard(),
+            cpuFrequencies = getCpuFrequencies(),
+            cpuGovernor = getCpuGovernor(),
+            cpuTemperatureC = getCpuTemperature(),
             thermalThrottlingStatus = getThermalStatus(),
             systemUptimeMs = SystemClock.elapsedRealtime()
         )
     }
 
-
     private fun getSocManufacturerCompat(): String =
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) Build.SOC_MANUFACTURER else "Unknown"
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) Build.SOC_MANUFACTURER.orUnknown() else "Unknown"
 
     private fun getSocModelCompat(): String =
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) Build.SOC_MODEL else "Unknown"
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) Build.SOC_MODEL.orUnknown() else "Unknown"
 
     private fun getHardwareSkuCompat(): String =
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) Build.SKU else "Unknown"
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) Build.SKU.orUnknown() else "Unknown"
 
     private fun getOdmSkuCompat(): String =
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) Build.ODM_SKU else "Unknown"
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) Build.ODM_SKU.orUnknown() else "Unknown"
 
     private fun getActiveSimCountCompat(tm: TelephonyManager): Int =
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) tm.activeModemCount else if (isSimSupported()) 1 else 0
 
     private fun hasFeatureCompat(feature: String, minApi: Int): Boolean =
-        Build.VERSION.SDK_INT >= minApi && appContext.packageManager.hasSystemFeature(feature)
+        Build.VERSION.SDK_INT >= minApi && packageManager.hasSystemFeature(feature)
 
-    private fun getChargeTimeRemainingCompat(bm: BatteryManager): Long =
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) bm.computeChargeTimeRemaining() else -1L
+    private fun getChargeTimeRemainingCompat(batteryManager: BatteryManager): Long =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) batteryManager.computeChargeTimeRemaining() else -1L
 
     // ================= ADVANCED SYSTEM CHECKS =================
 
-    private fun checkIsGsiAdvanced(): Boolean {
-        val props = listOf(
-            getSystemProperty("ro.product.system.name").lowercase(),
-            getSystemProperty("ro.product.system.device").lowercase(),
-            getSystemProperty("ro.build.flavor").lowercase(),
-            getSystemProperty("ro.product.name").lowercase()
+    private fun analyzeGsiInfo(): CompatibilityResult {
+        val evidence = linkedSetOf<String>()
+        val props = mapOf(
+            "ro.product.system.name" to getSystemProperty("ro.product.system.name"),
+            "ro.product.system.device" to getSystemProperty("ro.product.system.device"),
+            "ro.build.flavor" to getSystemProperty("ro.build.flavor"),
+            "ro.product.name" to getSystemProperty("ro.product.name"),
+            "ro.system.build.fingerprint" to getSystemProperty("ro.system.build.fingerprint"),
+            "ro.system_ext.build.fingerprint" to getSystemProperty("ro.system_ext.build.fingerprint"),
+            "ro.build.description" to getSystemProperty("ro.build.description")
         )
-        if (props.any { it.contains("gsi") || it.contains("treble_") || it.contains("aosp") }) return true
 
-        val hasPhhProps = getSystemProperty("persist.sys.phh.mainkeys").isNotEmpty() ||
-                getSystemProperty("ro.treble.phh.rom_hal_version").isNotEmpty()
-        if (hasPhhProps || File("/system/phh").exists() || File("/system/bin/phh-su").exists()) return true
+        props.forEach { (key, value) ->
+            val normalized = value.lowercase(Locale.ROOT)
+            when {
+                normalized.contains("treble_") -> evidence += "$key contains treble_"
+                normalized.contains("gsi") -> evidence += "$key contains gsi"
+                normalized.contains("phh") -> evidence += "$key contains phh"
+                normalized.contains("aosp") -> evidence += "$key contains aosp"
+                normalized.contains("generic") -> evidence += "$key contains generic"
+            }
+        }
 
-        return false
+        val phhProps = listOf(
+            "persist.sys.phh.mainkeys",
+            "persist.sys.phh.disable_audio_effects",
+            "ro.treble.phh.rom_hal_version"
+        ).filter { getSystemProperty(it).isNotBlank() }
+        if (phhProps.isNotEmpty()) evidence += "PHH props: ${phhProps.joinToString()}"
+
+        val gsiMarkers = listOf(
+            "/system/phh" to "PHH system marker",
+            "/system/bin/phh-su" to "phh-su present",
+            "/system/etc/treble_app_compat.xml" to "Treble app compat file"
+        ).filter { File(it.first).exists() }.map { it.second }
+        evidence += gsiMarkers
+
+        val systemFp = getSystemProperty("ro.system.build.fingerprint")
+        val vendorFp = getSystemProperty("ro.vendor.build.fingerprint")
+        if (systemFp.isNotBlank() && vendorFp.isNotBlank()) {
+            val systemBrand = systemFp.substringBefore('/').substringBefore(':').lowercase(Locale.ROOT)
+            val vendorBrand = vendorFp.substringBefore('/').substringBefore(':').lowercase(Locale.ROOT)
+            if (systemBrand.isNotBlank() && vendorBrand.isNotBlank() && systemBrand != vendorBrand) {
+                evidence += "system/vendor fingerprint mismatch"
+            }
+        }
+
+        val strong = evidence.any {
+            it.contains("phh", ignoreCase = true) ||
+                it.contains("contains gsi", ignoreCase = true) ||
+                it.contains("contains treble_", ignoreCase = true)
+        }
+        val medium = evidence.any {
+            it.contains("contains aosp", ignoreCase = true) ||
+                it.contains("contains generic", ignoreCase = true) ||
+                it.contains("fingerprint mismatch", ignoreCase = true)
+        }
+
+        return when {
+            strong -> CompatibilityResult(
+                detected = true,
+                status = "Detected",
+                evidence = evidence.take(3).joinToString(" • ").ifBlank { "PHH / GSI markers found" }
+            )
+            medium -> CompatibilityResult(
+                detected = true,
+                status = "Likely",
+                evidence = evidence.take(3).joinToString(" • ").ifBlank { "AOSP / generic system image markers found" }
+            )
+            else -> CompatibilityResult(
+                detected = false,
+                status = "Not detected",
+                evidence = if (checkIsDynamicPartitions() && getSystemProperty("ro.treble.enabled") == "true") {
+                    "Treble-capable device, but no clear GSI markers"
+                } else {
+                    "OEM / stock-like system image markers"
+                }
+            )
+        }
     }
 
-    private fun checkIsGkiAdvanced(): Boolean {
-        val kernelVersion = System.getProperty("os.version")?.lowercase() ?: ""
-        if (kernelVersion.contains("gki")) return true
+    private fun analyzeGkiInfo(): CompatibilityResult {
+        val evidence = linkedSetOf<String>()
+        val kernelVersion = kernelVersionCache.lowercase(Locale.ROOT)
+        val cmdline = readFirstLine("/proc/cmdline").orEmpty().lowercase(Locale.ROOT)
+        val bootConfig = readFirstLine("/proc/bootconfig").orEmpty().lowercase(Locale.ROOT)
+        val firstApiLevel = getSystemProperty("ro.product.first_api_level").toIntOrNull()
+            ?: getSystemProperty("ro.board.first_api_level").toIntOrNull()
 
-        val gkiRegex = Regex("""^(\d+)\.(\d+)\.\d+-android\d+-""")
-        val matchResult = gkiRegex.find(kernelVersion)
-        if (matchResult != null) {
-            val major = matchResult.groupValues[1].toIntOrNull() ?: 0
-            val minor = matchResult.groupValues[2].toIntOrNull() ?: 0
-            if (major > 5 || (major == 5 && minor >= 4)) return true
+        if (kernelVersion.contains("gki")) evidence += "/proc/version contains gki"
+        if (Regex("android(12|13|14|15|16)-").containsMatchIn(kernelVersion)) {
+            evidence += "/proc/version matches android common kernel pattern"
         }
-        return false
+        if (cmdline.contains("androidboot.hardware") && cmdline.contains("bootconfig")) {
+            evidence += "/proc/cmdline exposes modern bootconfig markers"
+        }
+        if (bootConfig.contains("androidboot.")) {
+            evidence += "/proc/bootconfig available"
+        }
+        if (firstApiLevel != null && firstApiLevel >= 31) {
+            evidence += "first API level $firstApiLevel suggests GKI era launch"
+        }
+
+        val match = Regex("""(\d+)\.(\d+)\.(\d+)-android(\d+)-""").find(kernelVersion)
+        val kernelMajor = match?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 0
+        val kernelMinor = match?.groupValues?.getOrNull(2)?.toIntOrNull() ?: 0
+        if ((kernelMajor > 5 || (kernelMajor == 5 && kernelMinor >= 4)) && firstApiLevel != null && firstApiLevel >= 31) {
+            evidence += "kernel >= 5.4 on Android 12+ launch device"
+        }
+
+        val strong = evidence.any { it.contains("contains gki") || it.contains("android common kernel pattern") }
+        val medium = evidence.size >= 2
+
+        return when {
+            strong -> CompatibilityResult(
+                detected = true,
+                status = "Detected",
+                evidence = evidence.take(3).joinToString(" • ").ifBlank { "Android common kernel markers found" }
+            )
+            medium -> CompatibilityResult(
+                detected = true,
+                status = "Likely",
+                evidence = evidence.take(3).joinToString(" • ").ifBlank { "Modern GKI-era kernel markers found" }
+            )
+            else -> CompatibilityResult(
+                detected = false,
+                status = "Not detected",
+                evidence = if (kernelVersion.contains("perf+") || kernelVersion.contains("silvercore") || kernelVersion.contains("eas")) {
+                    "Custom kernel style markers found"
+                } else {
+                    "Legacy or OEM-specific kernel string"
+                }
+            )
+        }
     }
 
     private fun checkIsDynamicPartitions(): Boolean {
         if (getSystemProperty("ro.boot.dynamic_partitions") == "true") return true
         val mapperPaths = listOf(
-            "/dev/block/mapper/system", "/dev/block/mapper/system_a",
-            "/dev/block/mapper/vendor", "/dev/block/mapper/vendor_a"
+            "/dev/block/mapper/system",
+            "/dev/block/mapper/system_a",
+            "/dev/block/mapper/vendor",
+            "/dev/block/mapper/vendor_a"
         )
         if (mapperPaths.any { File(it).exists() }) return true
-        if (File("/dev/block/by-name/super").exists()) return true
-        return false
+        return File("/dev/block/by-name/super").exists()
     }
 
     private fun getVirtualAbStatus(): String {
@@ -283,489 +577,834 @@ class DeviceInfoProvider(context: Context) {
 
     private fun checkIsSeamlessUpdateSupported(): Boolean {
         if (getSystemProperty("ro.build.ab_update", "false") == "true") return true
-        val abPaths = listOf("/dev/block/by-name/boot_a", "/dev/block/by-name/system_a", "/dev/block/mapper/system_a")
+        val abPaths = listOf(
+            "/dev/block/by-name/boot_a",
+            "/dev/block/by-name/system_a",
+            "/dev/block/mapper/system_a"
+        )
         return abPaths.any { File(it).exists() }
     }
 
     private fun checkIsSystemAsRoot(): Boolean {
-        val propSysRoot = getSystemProperty("ro.build.system_root_image") == "true"
-        val propBootSysRoot = getSystemProperty("ro.boot.system_root_image") == "true"
-        if (propSysRoot || propBootSysRoot) return true
-        if (Build.VERSION.SDK_INT >= 29) return true
+        if (getSystemProperty("ro.build.system_root_image") == "true") return true
+        if (getSystemProperty("ro.boot.system_root_image") == "true") return true
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) return true
 
-        try {
-            val mountsFile = File("/proc/mounts")
-            if (mountsFile.exists()) {
-                val mounts = mountsFile.readLines()
-                for (line in mounts) {
+        return runCatching {
+            File("/proc/mounts")
+                .takeIf(File::exists)
+                ?.readLines()
+                ?.any { line ->
                     val parts = line.split(" ")
-                    if (parts.size >= 3 && parts[1] == "/") {
-                        val fsType = parts[2]
-                        if (fsType != "rootfs" && fsType != "tmpfs") return true
-                    }
-                }
-            }
-        } catch (e: Exception) { e.printStackTrace() }
-        return false
+                    parts.size >= 3 && parts[1] == "/" && parts[2] !in setOf("rootfs", "tmpfs")
+                } == true
+        }.getOrDefault(false)
     }
 
     // ================= MEDIA & DISPLAY CHECKS =================
 
-    private fun getWidevineInfo(): Map<String, String> {
-        val widevineUuid = UUID(-0x121074561ec14800L, -0x5c6b47d8d415a111L) // UUID для Widevine
-        val info = mutableMapOf<String, String>()
-
+    private fun readWidevineInfo(): WidevineInfo {
+        val widevineUuid = UUID(-0x121074561ec14800L, -0x5c6b47d8d415a111L)
         var mediaDrm: MediaDrm? = null
-        try {
+
+        return try {
             mediaDrm = MediaDrm(widevineUuid)
-            info["vendor"] = mediaDrm.getPropertyString(MediaDrm.PROPERTY_VENDOR) ?: "Unknown"
-            info["version"] = mediaDrm.getPropertyString(MediaDrm.PROPERTY_VERSION) ?: "Unknown"
-            info["description"] = mediaDrm.getPropertyString(MediaDrm.PROPERTY_DESCRIPTION) ?: "Unknown"
-            info["algorithms"] = mediaDrm.getPropertyString(MediaDrm.PROPERTY_ALGORITHMS) ?: "Unknown"
-            info["securityLevel"] = mediaDrm.getPropertyString("securityLevel") ?: "Unknown"
-            info["maxHdcp"] = mediaDrm.getPropertyString("maxHdcpLevel") ?: "Unknown"
-        } catch (e: Exception) {
-            val none = "Not Supported"
-            info["vendor"] = none; info["version"] = none; info["description"] = none
-            info["algorithms"] = none; info["securityLevel"] = none; info["maxHdcp"] = none
+            WidevineInfo(
+                vendor = safeDrmString(mediaDrm, MediaDrm.PROPERTY_VENDOR),
+                version = safeDrmString(mediaDrm, MediaDrm.PROPERTY_VERSION),
+                description = safeDrmString(mediaDrm, MediaDrm.PROPERTY_DESCRIPTION),
+                algorithms = safeDrmString(mediaDrm, MediaDrm.PROPERTY_ALGORITHMS),
+                securityLevel = safeDrmString(mediaDrm, "securityLevel"),
+                maxHdcp = safeDrmString(mediaDrm, "maxHdcpLevel")
+            )
+        } catch (_: Exception) {
+            WidevineInfo(
+                vendor = "Not Supported",
+                version = "Not Supported",
+                description = "Not Supported",
+                algorithms = "Not Supported",
+                securityLevel = "Not Supported",
+                maxHdcp = "Not Supported"
+            )
         } finally {
-            mediaDrm?.release()
+            runCatching { mediaDrm?.release() }
         }
-        return info
     }
+
+    private fun safeDrmString(mediaDrm: MediaDrm, key: String): String =
+        runCatching { mediaDrm.getPropertyString(key) }
+            .getOrNull()
+            .orUnknown("Unknown")
 
     private fun getDisplayDetails(): Pair<Boolean, Boolean> {
         val displayManager = appContext.getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
-        val display = displayManager.getDisplay(Display.DEFAULT_DISPLAY) ?: return Pair(false, false)
-        val isHdr = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            display.mode.supportedHdrTypes.isNotEmpty()
-        } else {
+        val display = displayManager.getDisplay(Display.DEFAULT_DISPLAY) ?: return false to false
+        val isHdr = runCatching {
             @Suppress("DEPRECATION")
             display.hdrCapabilities?.supportedHdrTypes?.isNotEmpty() == true
+        }.getOrDefault(false)
+        val isWcg = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            runCatching { display.isWideColorGamut }.getOrDefault(false)
+        } else {
+            false
         }
-        val isWcg = display.isWideColorGamut
-        return Pair(isHdr, isWcg)
+        return isHdr to isWcg
     }
 
     private fun getDisplayRefreshRate(): Int {
         val displayManager = appContext.getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
         val display = displayManager.getDisplay(Display.DEFAULT_DISPLAY) ?: return 0
-        val rate = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) display.mode.refreshRate
-        else { @Suppress("DEPRECATION") display.refreshRate }
-        return rate.roundToInt()
+        val refreshRate = runCatching { display.mode.refreshRate }
+            .getOrNull()
+            ?.takeIf { it > 0f }
+            ?: runCatching {
+                @Suppress("DEPRECATION")
+                display.refreshRate
+            }.getOrDefault(0f)
+        return refreshRate.roundToInt()
     }
 
-    private fun getMultitouchDetails(): String {
-        val pm = appContext.packageManager
-        return when {
-            pm.hasSystemFeature(PackageManager.FEATURE_TOUCHSCREEN_MULTITOUCH_JAZZHAND) -> "Supported (5+ points)"
-            pm.hasSystemFeature(PackageManager.FEATURE_TOUCHSCREEN_MULTITOUCH_DISTINCT) -> "Supported (2+ points)"
-            pm.hasSystemFeature(PackageManager.FEATURE_TOUCHSCREEN_MULTITOUCH) -> "Supported (Basic)"
-            pm.hasSystemFeature(PackageManager.FEATURE_TOUCHSCREEN) -> "Single Touch Only"
-            else -> "Not Supported"
+    private fun getMultitouchDetails(): String = when {
+        packageManager.hasSystemFeature(PackageManager.FEATURE_TOUCHSCREEN_MULTITOUCH_JAZZHAND) -> "Supported (5+ points)"
+        packageManager.hasSystemFeature(PackageManager.FEATURE_TOUCHSCREEN_MULTITOUCH_DISTINCT) -> "Supported (2+ points)"
+        packageManager.hasSystemFeature(PackageManager.FEATURE_TOUCHSCREEN_MULTITOUCH) -> "Supported (Basic)"
+        packageManager.hasSystemFeature(PackageManager.FEATURE_TOUCHSCREEN) -> "Single Touch Only"
+        else -> "Not Supported"
+    }
+
+    private fun readCameraSummary(): CameraSummary {
+        return try {
+            val cameraManager = appContext.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+            var bestHardwareLevel = CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL_LEGACY
+            var rearMp = 0.0
+            var frontMp = 0.0
+
+            for (cameraId in cameraManager.cameraIdList) {
+                val characteristics = cameraManager.getCameraCharacteristics(cameraId)
+                val facing = characteristics.get(CameraCharacteristics.LENS_FACING)
+                val activeArray = characteristics.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)
+                val hardwareLevel = characteristics.get(CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL)
+                    ?: CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL_LEGACY
+
+                if (hardwareLevelScore(hardwareLevel) > hardwareLevelScore(bestHardwareLevel)) {
+                    bestHardwareLevel = hardwareLevel
+                }
+
+                val megapixels = activeArray?.let { (it.width().toDouble() * it.height().toDouble()) / 1_000_000.0 } ?: 0.0
+                when (facing) {
+                    CameraCharacteristics.LENS_FACING_BACK -> if (megapixels > rearMp) rearMp = megapixels
+                    CameraCharacteristics.LENS_FACING_FRONT -> if (megapixels > frontMp) frontMp = megapixels
+                }
+            }
+
+            CameraSummary(
+                hardwareLevel = hardwareLevelLabel(bestHardwareLevel),
+                rearMegapixels = rearMp.takeIf { it > 0.0 }?.let { "${it.roundToInt()} MP" } ?: "Unknown",
+                frontMegapixels = frontMp.takeIf { it > 0.0 }?.let { "${it.roundToInt()} MP" } ?: "Unknown"
+            )
+        } catch (_: Exception) {
+            CameraSummary(
+                hardwareLevel = "Unknown",
+                rearMegapixels = "Unknown",
+                frontMegapixels = "Unknown"
+            )
         }
     }
 
-    private fun getCameraMegapixels(): Pair<String, String> {
-        return try {
-            val cm = appContext.getSystemService(Context.CAMERA_SERVICE) as CameraManager
-            var rearMp = "Unknown"
-            var frontMp = "Unknown"
-            for (cameraId in cm.cameraIdList) {
-                val chars = cm.getCameraCharacteristics(cameraId)
-                val facing = chars.get(CameraCharacteristics.LENS_FACING)
-                val size = chars.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)
-                if (size != null) {
-                    val mp = (size.width() * size.height() / 1000000.0).roundToInt().toString() + " MP"
-                    if (facing == CameraCharacteristics.LENS_FACING_BACK && rearMp == "Unknown") rearMp = mp
-                    if (facing == CameraCharacteristics.LENS_FACING_FRONT && frontMp == "Unknown") frontMp = mp
-                }
-            }
-            Pair(rearMp, frontMp)
-        } catch (e: Exception) { Pair("Unknown", "Unknown") }
+    private fun hardwareLevelScore(level: Int): Int = when (level) {
+        CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL_3 -> 5
+        CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL_FULL -> 4
+        CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL_EXTERNAL -> 3
+        CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL_LIMITED -> 2
+        CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL_LEGACY -> 1
+        else -> 0
+    }
+
+    private fun hardwareLevelLabel(level: Int): String = when (level) {
+        CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL_3 -> "Level 3"
+        CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL_FULL -> "Full"
+        CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL_EXTERNAL -> "External"
+        CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL_LIMITED -> "Limited"
+        CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL_LEGACY -> "Legacy"
+        else -> "Unknown"
     }
 
     private fun getThermalStatus(): String {
-        val pm = appContext.getSystemService(Context.POWER_SERVICE) as PowerManager
-        return when (pm.currentThermalStatus) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return "Unknown / Not Supported"
+        val powerManager = appContext.getSystemService(Context.POWER_SERVICE) as PowerManager
+        return when (powerManager.currentThermalStatus) {
             PowerManager.THERMAL_STATUS_NONE -> "Cool / Normal"
             PowerManager.THERMAL_STATUS_LIGHT -> "Light Throttling"
             PowerManager.THERMAL_STATUS_MODERATE -> "Moderate Throttling"
             PowerManager.THERMAL_STATUS_SEVERE -> "Severe Throttling"
             PowerManager.THERMAL_STATUS_CRITICAL -> "Critical Throttling"
-            PowerManager.THERMAL_STATUS_EMERGENCY -> "Emergency!"
+            PowerManager.THERMAL_STATUS_EMERGENCY -> "Emergency"
             PowerManager.THERMAL_STATUS_SHUTDOWN -> "Shutting Down"
             else -> "Unknown"
         }
     }
 
     private fun getNetworkIpAddresses(): Pair<String, String> {
-        var ipv4 = "Not Connected"
-        var ipv6 = "Not Connected"
-        try {
-            val cm = appContext.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-            val linkProperties: LinkProperties? = cm.getLinkProperties(cm.activeNetwork)
-            linkProperties?.linkAddresses?.forEach { linkAddress ->
-                val address = linkAddress.address
-                if (!address.isLoopbackAddress) {
-                    if (address is Inet4Address) ipv4 = address.hostAddress ?: "Unknown"
-                    else if (address is Inet6Address) {
-                        val fullAddress = address.hostAddress ?: ""
-                        ipv6 = fullAddress.substringBefore('%').ifEmpty { "Unknown" }
+        val fromLinkProperties = runCatching {
+            val connectivityManager = appContext.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            extractIpAddresses(connectivityManager.getLinkProperties(connectivityManager.activeNetwork))
+        }.getOrNull()
+
+        if (fromLinkProperties != null && fromLinkProperties != ("Not Connected" to "Not Connected")) {
+            return fromLinkProperties
+        }
+
+        return runCatching {
+            var ipv4 = "Not Connected"
+            var ipv6 = "Not Connected"
+            val interfaces = Collections.list(NetworkInterface.getNetworkInterfaces())
+            interfaces.forEach { networkInterface ->
+                if (!networkInterface.isUp || networkInterface.isLoopback) return@forEach
+                Collections.list(networkInterface.inetAddresses).forEach { address ->
+                    if (address.isLoopbackAddress) return@forEach
+                    when (address) {
+                        is Inet4Address -> ipv4 = address.hostAddress.orUnknown("Unknown")
+                        is Inet6Address -> ipv6 = address.hostAddress?.substringBefore('%').orUnknown("Unknown")
                     }
                 }
             }
-        } catch (e: Exception) { /* Ігноруємо */ }
-        return Pair(ipv4, ipv6)
+            ipv4 to ipv6
+        }.getOrDefault("Not Connected" to "Not Connected")
+    }
+
+    private fun extractIpAddresses(linkProperties: LinkProperties?): Pair<String, String> {
+        var ipv4 = "Not Connected"
+        var ipv6 = "Not Connected"
+        linkProperties?.linkAddresses?.forEach { linkAddress ->
+            val address = linkAddress.address ?: return@forEach
+            if (address.isLoopbackAddress) return@forEach
+            when (address) {
+                is Inet4Address -> ipv4 = address.hostAddress.orUnknown("Unknown")
+                is Inet6Address -> ipv6 = address.hostAddress?.substringBefore('%').orUnknown("Unknown")
+            }
+        }
+        return ipv4 to ipv6
     }
 
     // ================= ROOT & SYSFS LOGIC =================
 
-    // ОПТИМІЗАЦІЯ ПРОДУКТИВНОСТІ: Видалено виклик su для динамічних даних,
-    // щоб уникнути перегріву процесора під час щосекундного оновлення.
-    private fun readSysfsFallback(paths: List<String>, isDeniedCache: Boolean): String? {
-        if (!isDeniedCache) {
-            for (path in paths) {
-                try {
-                    val file = File(path)
-                    if (file.exists() && file.canRead()) {
-                        val content = file.readText().trim()
-                        if (content.isNotEmpty()) return content
-                    }
-                } catch (e: Exception) { /* Ігноруємо */ }
+    private fun readFirstLine(path: String): String? = runCatching {
+        File(path).takeIf { it.exists() && it.canRead() }?.bufferedReader()?.use { reader ->
+            reader.readLine()?.trim()?.takeIf(String::isNotEmpty)
+        }
+    }.getOrNull()
+
+    private fun readCachedNode(cacheKey: String, candidates: List<String>, isDenied: Boolean): String? {
+        val cachedPath = readableNodeCache[cacheKey]
+        if (!cachedPath.isNullOrBlank()) {
+            val value = readFirstLine(cachedPath)
+            if (!value.isNullOrBlank()) return value
+            readableNodeCache.remove(cacheKey)
+        }
+
+        if (isDenied) return null
+
+        for (path in candidates) {
+            val value = readFirstLine(path)
+            if (!value.isNullOrBlank()) {
+                readableNodeCache[cacheKey] = path
+                return value
             }
         }
+        readableNodeCache[cacheKey] = null
         return null
     }
 
     private fun readNodeViaRoot(command: String): String? {
         if (!isDeviceRooted) return null
-        return try {
+        return runCatching {
             val process = Runtime.getRuntime().exec(arrayOf("su", "-c", command))
             val result = process.inputStream.bufferedReader().use { it.readText() }.trim()
             process.waitFor()
-            result.ifEmpty { null }
-        } catch (e: Exception) { null }
+            result.takeIf(String::isNotEmpty)
+        }.getOrNull()
     }
 
     // ================= DYNAMIC SYSFS READERS =================
 
-    private fun getBatteryCurrentMa(bm: BatteryManager): Int {
-        val microAmps = bm.getLongProperty(BatteryManager.BATTERY_PROPERTY_CURRENT_NOW)
-        if (microAmps != Long.MIN_VALUE && microAmps != 0L) return (abs(microAmps) / 1000L).toInt()
+    private fun getBatteryCurrentMa(batteryManager: BatteryManager): Int {
+        val microAmps = batteryManager.getLongProperty(BatteryManager.BATTERY_PROPERTY_CURRENT_NOW)
+        if (microAmps != Long.MIN_VALUE && microAmps != 0L) {
+            return (abs(microAmps) / 1000L).toInt()
+        }
 
         val paths = listOf(
-            "/sys/class/power_supply/battery/current_now", "/sys/class/power_supply/bms/current_now",
-            "/sys/class/power_supply/main/current_now", "/sys/class/power_supply/battery/batt_current",
-            "/sys/class/power_supply/battery/batt_current_now", "/sys/devices/platform/battery/power_supply/battery/current_now"
+            "/sys/class/power_supply/battery/current_now",
+            "/sys/class/power_supply/bms/current_now",
+            "/sys/class/power_supply/main/current_now",
+            "/sys/class/power_supply/battery/batt_current",
+            "/sys/class/power_supply/battery/batt_current_now",
+            "/sys/devices/platform/battery/power_supply/battery/current_now"
         )
-        val content = readSysfsFallback(paths, sysfsBatteryCurrentDenied)
+        val content = readCachedNode("battery_current", paths, sysfsBatteryCurrentDenied)
         if (content != null) {
             val rawValue = content.toLongOrNull() ?: return 0
             val absValue = abs(rawValue)
-            return if (absValue > 10000) (absValue / 1000).toInt() else absValue.toInt()
-        } else sysfsBatteryCurrentDenied = true
+            return if (absValue > 10_000L) (absValue / 1000L).toInt() else absValue.toInt()
+        }
+        sysfsBatteryCurrentDenied = true
         return 0
     }
 
-    private fun getBatteryCycleCount(bm: BatteryManager, intent: Intent?): Int {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            val cycles = intent?.getIntExtra(BatteryManager.EXTRA_CYCLE_COUNT, -1) ?: -1
-            if (cycles > 0) return cycles
-        }
-        val paths = listOf("/sys/class/power_supply/battery/cycle_count", "/sys/class/power_supply/bms/charge_full")
-        val content = readSysfsFallback(paths, sysfsBatteryCyclesDenied)
-        if (content != null) {
-            val cycles = content.toIntOrNull()
-            if (cycles != null && cycles in 1..10000) return cycles
-        } else sysfsBatteryCyclesDenied = true
-        return -1
+    private val networkTypeLteCaCompat: Int? by lazy(LazyThreadSafetyMode.NONE) {
+        runCatching {
+            TelephonyManager::class.java.getField("NETWORK_TYPE_LTE_CA").getInt(null)
+        }.getOrNull()
     }
 
-    private fun getCpuTemperature(): Float? {
-        val paths = listOf(
-            "/sys/class/thermal/thermal_zone0/temp", "/sys/class/thermal/thermal_zone1/temp",
-            "/sys/devices/system/cpu/cpu0/cpufreq/cpu_temp", "/sys/class/hwmon/hwmon0/temp1_input"
+    private fun getBatteryCycleCount(bm: BatteryManager, batteryIntent: Intent? = null): Int? =
+        getBatteryCycleCountCompat(bm, batteryIntent)
+
+    private fun getBatteryCycleCountCompat(bm: BatteryManager, batteryIntent: Intent? = null): Int? {
+        val fromApi = runCatching {
+            val field = BatteryManager::class.java.getField("BATTERY_PROPERTY_CYCLE_COUNT")
+            val propId = field.getInt(null)
+            bm.getIntProperty(propId)
+        }.getOrNull()?.takeIf { it > 0 && it != Int.MIN_VALUE }
+
+        if (fromApi != null) return fromApi
+
+        val fromIntent = runCatching {
+            val extraField = BatteryManager::class.java.getField("EXTRA_CYCLE_COUNT")
+            val extraKey = extraField.get(null) as? String
+            extraKey?.let { key -> batteryIntent?.getIntExtra(key, -1) }
+        }.getOrNull()?.takeIf { it != null && it > 0 }
+
+        if (fromIntent != null) return fromIntent
+
+        val sysfsCandidates = listOf(
+            "/sys/class/power_supply/battery/cycle_count",
+            "/sys/class/power_supply/bms/cycle_count",
+            "/sys/class/power_supply/maxfg/cycle_count",
+            "/sys/class/power_supply/battery/charge_cycles"
         )
-        val content = readSysfsFallback(paths, sysfsCpuTempDenied)
-        if (content != null) {
-            val temp = content.toFloatOrNull() ?: return null
-            return if (temp > 1000) temp / 1000f else temp
-        } else sysfsCpuTempDenied = true
+
+        val fromSysfs = readCachedNode("battery_cycle_count", sysfsCandidates, sysfsBatteryCyclesDenied)
+            ?.toIntOrNull()
+            ?.takeIf { it > 0 }
+        if (fromSysfs != null) return fromSysfs
+
+        sysfsBatteryCyclesDenied = true
         return null
     }
 
+    private fun mapNetworkTypeCompat(networkType: Int): String {
+        return when (networkType) {
+            TelephonyManager.NETWORK_TYPE_NR -> "5G NR"
+            TelephonyManager.NETWORK_TYPE_LTE -> "LTE"
+            TelephonyManager.NETWORK_TYPE_IWLAN -> "IWLAN"
+            TelephonyManager.NETWORK_TYPE_HSPAP,
+            TelephonyManager.NETWORK_TYPE_HSPA,
+            TelephonyManager.NETWORK_TYPE_HSDPA,
+            TelephonyManager.NETWORK_TYPE_HSUPA,
+            TelephonyManager.NETWORK_TYPE_UMTS,
+            TelephonyManager.NETWORK_TYPE_EVDO_0,
+            TelephonyManager.NETWORK_TYPE_EVDO_A,
+            TelephonyManager.NETWORK_TYPE_EVDO_B,
+            TelephonyManager.NETWORK_TYPE_EHRPD,
+            TelephonyManager.NETWORK_TYPE_TD_SCDMA -> "3G"
+            TelephonyManager.NETWORK_TYPE_EDGE,
+            TelephonyManager.NETWORK_TYPE_GPRS,
+            TelephonyManager.NETWORK_TYPE_CDMA,
+            TelephonyManager.NETWORK_TYPE_1xRTT,
+            TelephonyManager.NETWORK_TYPE_IDEN,
+            TelephonyManager.NETWORK_TYPE_GSM -> "2G"
+            TelephonyManager.NETWORK_TYPE_UNKNOWN -> "Unknown"
+            else -> "Unknown"
+        }
+    }
+
+    private fun getNetworkTypeNameCompat(
+        networkType: Int,
+        overrideNetworkType: Int? = null
+    ): String {
+        return when {
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.R &&
+                overrideNetworkType == TelephonyDisplayInfo.OVERRIDE_NETWORK_TYPE_LTE_CA -> "LTE CA"
+
+            networkTypeLteCaCompat != null && networkType == networkTypeLteCaCompat -> "LTE CA"
+
+            else -> mapNetworkTypeCompat(networkType)
+        }
+    }
+
+    private fun getCpuTemperature(): Float? {
+        val directPaths = listOf(
+            "/sys/class/thermal/thermal_zone0/temp",
+            "/sys/class/thermal/thermal_zone1/temp",
+            "/sys/devices/system/cpu/cpu0/cpufreq/cpu_temp",
+            "/sys/class/hwmon/hwmon0/temp1_input"
+        )
+        val directValue = readCachedNode("cpu_temp", directPaths, sysfsCpuTempDenied)?.toFloatOrNull()
+        if (directValue != null) return normalizeTemp(directValue)
+
+        val thermalZones = File("/sys/class/thermal")
+        if (thermalZones.exists() && thermalZones.isDirectory) {
+            thermalZones.listFiles()
+                ?.filter { it.name.startsWith("thermal_zone") }
+                ?.forEach { zone ->
+                    val type = readFirstLine("${zone.absolutePath}/type")?.lowercase(Locale.ROOT).orEmpty()
+                    if (type.contains("cpu") || type.contains("soc") || type.contains("ap") || type.contains("big") || type.contains("little")) {
+                        val temp = readFirstLine("${zone.absolutePath}/temp")?.toFloatOrNull()
+                        if (temp != null) {
+                            readableNodeCache["cpu_temp"] = "${zone.absolutePath}/temp"
+                            return normalizeTemp(temp)
+                        }
+                    }
+                }
+        }
+
+        sysfsCpuTempDenied = true
+        return null
+    }
+
+    private fun normalizeTemp(value: Float): Float = if (value > 1000f) value / 1000f else value
+
     private fun getCpuGovernor(): String? {
         val paths = listOf("/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor")
-        val content = readSysfsFallback(paths, sysfsCpuAccessDenied)
+        val content = readCachedNode("cpu_governor", paths, sysfsCpuAccessDenied)
         if (content == null) sysfsCpuAccessDenied = true
         return content
     }
 
-    private fun getCpuMaxFrequencies(): List<Int> {
-        val list = mutableListOf<Int>()
+    private fun discoverCpuFreqPaths(nodeName: String): List<String> {
+        val paths = mutableListOf<String>()
         val cores = Runtime.getRuntime().availableProcessors()
-        var hasAccessError = false
-
-        for (i in 0 until cores) {
-            try {
-                val file = File("/sys/devices/system/cpu/cpu$i/cpufreq/cpuinfo_max_freq")
-                if (file.exists() && file.canRead()) {
-                    val freq = file.readText().trim().toIntOrNull()?.div(1000)
-                    if (freq != null) list.add(freq) else hasAccessError = true
-                } else hasAccessError = true
-            } catch (e: Exception) { hasAccessError = true }
-        }
-
-        if (!hasAccessError && list.isNotEmpty()) return list
-        list.clear()
-
-        // Використовуємо ROOT лише для статичних перевірок (викликається 1 раз)
-        if (isDeviceRooted) {
-            val output = readNodeViaRoot("cat /sys/devices/system/cpu/cpu*/cpufreq/cpuinfo_max_freq")
-            if (output != null) {
-                for (line in output.split("\n")) {
-                    val freq = line.trim().toIntOrNull()?.div(1000)
-                    if (freq != null) list.add(freq)
-                }
+        for (index in 0 until cores) {
+            val path = "/sys/devices/system/cpu/cpu$index/cpufreq/$nodeName"
+            if (File(path).canRead()) {
+                paths += path
             }
         }
-        return list
+        return paths
     }
 
-    // ОПТИМІЗОВАНО: Прибрано виконання `su` команди в циклі
-    private fun getCpuFrequencies(): List<Int> {
-        val list = mutableListOf<Int>()
-        val cores = Runtime.getRuntime().availableProcessors()
+    private fun getCpuMaxFrequencies(): List<Int> {
+        val values = cpuMaxFreqPaths.mapNotNull { readFirstLine(it)?.toIntOrNull()?.div(1000) }
+        if (values.isNotEmpty()) return values
 
-        if (!sysfsCpuAccessDenied) {
-            var hasAccessError = false
-            for (i in 0 until cores) {
-                try {
-                    val file = File("/sys/devices/system/cpu/cpu$i/cpufreq/scaling_cur_freq")
-                    if (file.exists() && file.canRead()) {
-                        val freq = file.readText().trim().toIntOrNull()?.div(1000)
-                        if (freq != null) list.add(freq) else hasAccessError = true
-                    } else hasAccessError = true
-                } catch (e: Exception) { hasAccessError = true }
-            }
-            if (!hasAccessError && list.isNotEmpty()) return list
-            sysfsCpuAccessDenied = true
+        if (isDeviceRooted) {
+            val rootOutput = readNodeViaRoot("cat /sys/devices/system/cpu/cpu*/cpufreq/cpuinfo_max_freq")
+            val rootValues = rootOutput
+                ?.lineSequence()
+                ?.mapNotNull { it.trim().toIntOrNull()?.div(1000) }
+                ?.toList()
+                .orEmpty()
+            if (rootValues.isNotEmpty()) return rootValues
         }
+        return emptyList()
+    }
 
-        return list
+    private fun getCpuFrequencies(): List<Int> {
+        if (sysfsCpuAccessDenied) return emptyList()
+        val values = cpuCurrentFreqPaths.mapNotNull { readFirstLine(it)?.toIntOrNull()?.div(1000) }
+        if (values.isNotEmpty()) return values
+        sysfsCpuAccessDenied = true
+        return emptyList()
     }
 
     // ================= UTILS & WIFI =================
 
     private fun getUsedRamMb(): Long {
-        val mem = ActivityManager.MemoryInfo()
-        (appContext.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager).getMemoryInfo(mem)
-        return (mem.totalMem - mem.availMem) / (1024 * 1024)
+        val memoryInfo = ActivityManager.MemoryInfo()
+        activityManager.getMemoryInfo(memoryInfo)
+        return (memoryInfo.totalMem - memoryInfo.availMem) / (1024 * 1024)
     }
 
     private fun getFreeRamMb(): Long {
-        val mem = ActivityManager.MemoryInfo()
-        (appContext.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager).getMemoryInfo(mem)
-        return mem.availMem / (1024 * 1024)
+        val memoryInfo = ActivityManager.MemoryInfo()
+        activityManager.getMemoryInfo(memoryInfo)
+        return memoryInfo.availMem / (1024 * 1024)
     }
 
-    private fun getInternalFreeGb(): Long {
-        return try {
-            val stat = StatFs(Environment.getDataDirectory().path)
-            (stat.blockSizeLong * stat.availableBlocksLong) / (1024 * 1024 * 1024)
-        } catch (e: Exception) { File(appContext.filesDir.absolutePath).freeSpace / (1024 * 1024 * 1024) }
+    private fun getInternalFreeGb(): Long = runCatching {
+        val statFs = StatFs(Environment.getDataDirectory().path)
+        statFs.availableBytes / (1024 * 1024 * 1024)
+    }.getOrElse {
+        File(appContext.filesDir.absolutePath).freeSpace / (1024 * 1024 * 1024)
     }
 
-    private fun getNetworkOperatorName(): String? =
-        (appContext.getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager).networkOperatorName
+    private fun getNetworkOperatorName(): String? = runCatching {
+        telephonyManager.networkOperatorName?.takeIf(String::isNotBlank)
+    }.getOrNull()
 
     @SuppressLint("MissingPermission")
     private fun getReadableNetworkType(): String {
-        if (appContext.checkSelfPermission(Manifest.permission.READ_PHONE_STATE) != PackageManager.PERMISSION_GRANTED) return "Permission Denied"
-        return try {
-            when ((appContext.getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager).dataNetworkType) {
-                TelephonyManager.NETWORK_TYPE_NR -> "5G"; TelephonyManager.NETWORK_TYPE_LTE -> "4G (LTE)"
-                TelephonyManager.NETWORK_TYPE_HSPAP, TelephonyManager.NETWORK_TYPE_HSPA, TelephonyManager.NETWORK_TYPE_UMTS -> "3G (HSPA/UMTS)"
-                TelephonyManager.NETWORK_TYPE_EDGE, TelephonyManager.NETWORK_TYPE_GPRS -> "2G (EDGE/GPRS)"
+        if (appContext.checkSelfPermission(Manifest.permission.READ_PHONE_STATE) != PackageManager.PERMISSION_GRANTED) {
+            return "Permission Denied"
+        }
+
+        return runCatching {
+            val networkType = telephonyManager.dataNetworkType
+
+            when (getNetworkTypeNameCompat(networkType, null)) {
+                "LTE CA" -> "4G (LTE CA)"
+                "LTE" -> "4G (LTE)"
+                "5G NR" -> "5G"
+                "3G" -> "3G"
+                "2G" -> "2G"
+                "IWLAN" -> "Wi‑Fi Calling / IWLAN"
                 else -> "Unknown"
             }
-        } catch (e: Exception) { "Unknown" }
+        }.getOrDefault("Unknown")
     }
 
     private fun getActiveWifiInfo(): WifiInfo? {
-        val cm = appContext.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-        val capabilities = cm.getNetworkCapabilities(cm.activeNetwork) ?: return null
-        if (capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) {
-            return capabilities.transportInfo as? WifiInfo
-        }
-        return null
+        val connectivityManager = appContext.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        val capabilities = connectivityManager.getNetworkCapabilities(connectivityManager.activeNetwork)
+        val transportInfo = capabilities?.transportInfo as? WifiInfo
+        if (transportInfo != null) return transportInfo
+
+        return runCatching {
+            @Suppress("DEPRECATION")
+            val wifiManager = appContext.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+            wifiManager.connectionInfo
+        }.getOrNull()
     }
 
     private fun getWifiSpeed(): Int? {
         if (appContext.checkSelfPermission(Manifest.permission.ACCESS_WIFI_STATE) != PackageManager.PERMISSION_GRANTED) return null
-        return try {
-            val info = getActiveWifiInfo()
-            if (info != null && info.linkSpeed > 0) info.linkSpeed else null
-        } catch (e: Exception) { null }
+        return runCatching {
+            getActiveWifiInfo()?.linkSpeed?.takeIf { it > 0 }
+        }.getOrNull()
     }
 
     @SuppressLint("SwitchIntDef")
     private fun getWifiStandard(): String? {
         if (appContext.checkSelfPermission(Manifest.permission.ACCESS_WIFI_STATE) != PackageManager.PERMISSION_GRANTED) return null
-        return try {
-            val info = getActiveWifiInfo() ?: return null
-            when (info.wifiStandard) {
-                1 -> "Legacy (802.11a/b/g)"
-                4 -> "Wi-Fi 4 (802.11n)"
-                5 -> "Wi-Fi 5 (802.11ac)"
-                6 -> "Wi-Fi 6 (802.11ax)"
-                7 -> "Wi-Fi (802.11ad)"
-                8 -> "Wi-Fi 7 (802.11be)"
-                else -> "Unknown"
+        val info = getActiveWifiInfo() ?: return null
+
+        return if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+            when {
+                info.linkSpeed >= 2400 -> "Wi‑Fi 6 / 6E (Estimated)"
+                info.linkSpeed >= 866 -> "Wi‑Fi 5 (Estimated)"
+                info.linkSpeed >= 150 -> "Wi‑Fi 4 (Estimated)"
+                info.linkSpeed > 0 -> "Legacy / Unknown"
+                else -> null
             }
-        } catch (e: Exception) { null }
+        } else {
+            runCatching {
+                when (info.wifiStandard) {
+                    1 -> "Legacy (802.11a/b/g)"
+                    4 -> "Wi‑Fi 4 (802.11n)"
+                    5 -> "Wi‑Fi 5 (802.11ac)"
+                    6 -> "Wi‑Fi 6 (802.11ax)"
+                    7 -> "WiGig (802.11ad)"
+                    8 -> "Wi‑Fi 7 (802.11be)"
+                    else -> "Unknown"
+                }
+            }.getOrNull()
+        }
     }
 
     // ================= STATIC HELPERS =================
 
     private fun getDeviceName(): String {
-        val settingsName = Settings.Global.getString(appContext.contentResolver, Settings.Global.DEVICE_NAME)
-        if (!settingsName.isNullOrBlank()) return settingsName
-        val marketName = getSystemProperty("ro.product.marketname", "")
-        if (marketName.isNotBlank()) return marketName
-        return Build.MODEL
+        val settingsName = runCatching {
+            Settings.Global.getString(appContext.contentResolver, Settings.Global.DEVICE_NAME)
+        }.getOrNull().orEmpty().trim()
+        if (settingsName.isNotEmpty()) return settingsName
+
+        val marketName = listOf(
+            getSystemProperty("ro.product.marketname"),
+            getSystemProperty("ro.product.odm.marketname"),
+            getSystemProperty("ro.config.marketing_name"),
+            getSystemProperty("ro.vendor.oplus.market.name")
+        ).firstOrNull { it.isNotBlank() }
+        if (!marketName.isNullOrBlank()) return marketName
+
+        val secureBluetoothName = runCatching {
+            Settings.Secure.getString(appContext.contentResolver, "bluetooth_name")
+        }.getOrNull().orEmpty().trim()
+        if (secureBluetoothName.isNotEmpty()) return secureBluetoothName
+
+        return buildList {
+            val manufacturer = Build.MANUFACTURER.orUnknown("Unknown")
+            val model = Build.MODEL.orUnknown("Unknown")
+            if (!model.startsWith(manufacturer, ignoreCase = true)) add(manufacturer)
+            add(model)
+        }.joinToString(" ").trim().ifEmpty { "Unknown" }
     }
 
-    private fun getUiRomName(): String {
-        val hyper = getSystemProperty("ro.miui.version.name_raw", ""); val miui = getSystemProperty("ro.miui.ui.version.name", "")
-        val oneUi = getSystemProperty("ro.build.version.oneui", ""); val colorOs = getSystemProperty("ro.build.version.oplusrom", "")
-        val oxygenOs = getSystemProperty("ro.oxygen.version", ""); val funtouch = getSystemProperty("ro.vivo.os.version", "")
+    private fun detectRomInfo(): RomInfo {
+        fun versioned(display: String, family: String, version: String, type: String) = RomInfo(
+            displayName = if (version.isBlank()) display else "$display $version".trim(),
+            family = family,
+            version = version.ifBlank { "Unknown" },
+            type = type
+        )
+
+        val hyperVersion = firstNonBlankProp(
+            "ro.mi.os.version.name",
+            "ro.mi.os.version.code",
+            "ro.miui.version.name_raw"
+        )
+        if (hyperVersion.isNotBlank()) return versioned("HyperOS", "Xiaomi HyperOS", hyperVersion, "OEM")
+
+        val miuiVersion = firstNonBlankProp("ro.miui.ui.version.name", "ro.miui.version.name")
+        if (miuiVersion.isNotBlank()) return versioned("MIUI", "Xiaomi MIUI", miuiVersion, "OEM")
+
+        val oneUiVersion = parseOneUiVersion()
+        if (oneUiVersion.isNotBlank()) return versioned("One UI", "Samsung One UI", oneUiVersion, "OEM")
+
+        val emuiVersion = firstNonBlankProp("ro.build.version.emui", "ro.build.magic_api_level")
+        if (emuiVersion.isNotBlank()) return versioned("EMUI", "Huawei EMUI", emuiVersion.removePrefix("EmotionUI_"), "OEM")
+
+        val magicOsVersion = firstNonBlankProp("ro.build.version.magic", "ro.magic.version")
+        if (magicOsVersion.isNotBlank()) return versioned("MagicOS", "Honor MagicOS", magicOsVersion, "OEM")
+
+        val colorOsVersion = firstNonBlankProp("ro.build.version.oplusrom", "ro.build.version.opporom")
+        if (colorOsVersion.isNotBlank()) return versioned("ColorOS", "OPPO ColorOS", colorOsVersion, "OEM")
+
+        val realmeUiVersion = firstNonBlankProp("ro.build.version.realmeui", "ro.realme.ui.version")
+        if (realmeUiVersion.isNotBlank()) return versioned("realme UI", "realme UI", realmeUiVersion, "OEM")
+
+        val oxygenOsVersion = firstNonBlankProp("ro.oxygen.version", "ro.build.version.oxygen")
+        if (oxygenOsVersion.isNotBlank()) return versioned("OxygenOS", "OnePlus OxygenOS", oxygenOsVersion, "OEM")
+
+        val funtouchVersion = firstNonBlankProp("ro.vivo.os.version", "ro.vivo.os.build.display.id")
+        if (funtouchVersion.isNotBlank()) return versioned("Funtouch OS", "vivo Funtouch OS", funtouchVersion, "OEM")
+
+        val originOsVersion = firstNonBlankProp("ro.vivo.os.name", "ro.origin.os.version")
+        if (originOsVersion.lowercase(Locale.ROOT).contains("origin")) {
+            return versioned("OriginOS", "vivo OriginOS", firstNonBlankProp("ro.origin.os.version", "ro.vivo.os.version"), "OEM")
+        }
+
+        val customRomDetectors = listOf(
+            Triple("ro.lineage.version", "LineageOS", "Custom ROM"),
+            Triple("org.pixelexperience.version.display", "PixelExperience", "Custom ROM"),
+            Triple("ro.evolution.version", "Evolution X", "Custom ROM"),
+            Triple("ro.crdroid.version", "crDroid", "Custom ROM"),
+            Triple("ro.pixelos.version", "PixelOS", "Custom ROM"),
+            Triple("ro.project.elixir.version", "Project Elixir", "Custom ROM"),
+            Triple("ro.derp.version", "DerpFest", "Custom ROM"),
+            Triple("ro.aospa.version", "Paranoid Android", "Custom ROM"),
+            Triple("ro.arrow.version", "ArrowOS", "Custom ROM"),
+            Triple("ro.havoc.version", "Havoc-OS", "Custom ROM"),
+            Triple("ro.superior.version", "SuperiorOS", "Custom ROM"),
+            Triple("ro.xtended.version", "Xtended", "Custom ROM"),
+            Triple("ro.spark.version", "SparkOS", "Custom ROM"),
+            Triple("ro.rising.version", "RisingOS", "Custom ROM"),
+            Triple("ro.modversion", "Custom ROM", "Custom ROM")
+        )
+        customRomDetectors.firstOrNull { getSystemProperty(it.first).isNotBlank() }?.let { detector ->
+            return versioned(detector.second, detector.second, getSystemProperty(detector.first), detector.third)
+        }
+
+        val buildDisplay = Build.DISPLAY.orUnknown("")
+        val buildFlavor = getSystemProperty("ro.build.flavor")
+        val fingerprint = Build.FINGERPRINT.orUnknown("")
         return when {
-            hyper.isNotBlank() -> "HyperOS $hyper"
-            miui.isNotBlank() -> "MIUI $miui"
-            oneUi.isNotBlank() -> "OneUI (Samsung)"
-            colorOs.isNotBlank() -> "ColorOS $colorOs"
-            oxygenOs.isNotBlank() -> "OxygenOS $oxygenOs"
-            funtouch.isNotBlank() -> "Funtouch OS $funtouch"
-            else -> "AOSP / Stock"
+            buildDisplay.contains("userdebug", ignoreCase = true) ||
+                buildFlavor.contains("aosp", ignoreCase = true) ||
+                fingerprint.contains("aosp", ignoreCase = true) -> {
+                versioned("AOSP / Custom", "AOSP-like", Build.DISPLAY.orUnknown(Build.VERSION.RELEASE), "AOSP / Custom")
+            }
+            brandLooksPixel() -> versioned("Pixel UI", "Google Pixel", Build.VERSION.RELEASE.orUnknown(), "OEM")
+            else -> versioned("Android", detectBrandFamily(), Build.VERSION.RELEASE.orUnknown(), "Stock / OEM")
         }
     }
 
-    private fun getGpuInfo(): Triple<String, String, String> {
-        return try {
-            val am = appContext.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
-            Triple("Available via GLSurface", "Available via GLSurface", am.deviceConfigurationInfo.glEsVersion ?: "Unknown")
-        } catch (e: Exception) { Triple("Unknown", "Unknown", "Unknown") }
+    private fun parseOneUiVersion(): String {
+        val raw = getSystemProperty("ro.build.version.oneui")
+        if (raw.isBlank()) return ""
+        val digits = raw.filter(Char::isDigit)
+        return when (digits.length) {
+            3 -> "${digits[0]}.${digits[1]}${digits[2]}"
+            2 -> "${digits[0]}.${digits[1]}"
+            1 -> digits
+            else -> raw
+        }
+    }
+
+    private fun brandLooksPixel(): Boolean {
+        val manufacturer = Build.MANUFACTURER.orEmpty().lowercase(Locale.ROOT)
+        val brand = Build.BRAND.orEmpty().lowercase(Locale.ROOT)
+        return manufacturer == "google" || brand == "google"
+    }
+
+    private fun detectBrandFamily(): String {
+        val manufacturer = Build.MANUFACTURER.orUnknown("Android").trim()
+        val brand = Build.BRAND.orUnknown("").trim()
+        return if (brand.isNotEmpty() && !brand.equals(manufacturer, ignoreCase = true)) {
+            "$manufacturer / $brand"
+        } else {
+            manufacturer
+        }
+    }
+
+    private fun firstNonBlankProp(vararg keys: String): String =
+        keys.asSequence().map { getSystemProperty(it) }.firstOrNull { it.isNotBlank() }.orEmpty()
+
+    private fun getGpuInfo(): Triple<String, String, String> = runCatching {
+        val glEsVersion = activityManager.deviceConfigurationInfo?.glEsVersion.orUnknown()
+        val renderer = firstNonBlankProp(
+            "ro.hardware.egl",
+            "ro.hardware.vulkan",
+            "ro.board.platform"
+        ).ifBlank { "Unknown" }
+        val vendor = when {
+            renderer.contains("adreno", ignoreCase = true) -> "Qualcomm"
+            renderer.contains("mali", ignoreCase = true) -> "ARM"
+            renderer.contains("powervr", ignoreCase = true) -> "Imagination"
+            renderer.contains("xclipse", ignoreCase = true) -> "Samsung / AMD"
+            renderer.contains("immortalis", ignoreCase = true) -> "ARM"
+            renderer.contains("tegra", ignoreCase = true) -> "NVIDIA"
+            else -> detectGpuVendorFromProperties()
+        }
+        Triple(renderer, vendor, glEsVersion)
+    }.getOrElse {
+        Triple("Unknown", "Unknown", "Unknown")
+    }
+
+    private fun detectGpuVendorFromProperties(): String {
+        val props = listOf(
+            getSystemProperty("ro.hardware.egl"),
+            getSystemProperty("ro.hardware.vulkan"),
+            getSystemProperty("ro.board.platform")
+        ).joinToString(" ").lowercase(Locale.ROOT)
+        return when {
+            "adreno" in props || "qcom" in props || "sm8" in props || "sdm" in props -> "Qualcomm"
+            "mali" in props || "kirin" in props || "exynos" in props || "mt" in props -> "ARM"
+            "powervr" in props -> "Imagination"
+            "xclipse" in props -> "Samsung / AMD"
+            else -> "Unknown"
+        }
     }
 
     private fun getVulkanVersion(): String? {
-        val feature = appContext.packageManager.systemAvailableFeatures.firstOrNull { it.name == PackageManager.FEATURE_VULKAN_HARDWARE_VERSION }
-        val version = feature?.version ?: return null
+        val vulkanFeature = packageManager.systemAvailableFeatures
+            .firstOrNull { it.name == PackageManager.FEATURE_VULKAN_HARDWARE_VERSION }
+        val version = vulkanFeature?.version ?: return null
         return "${version shr 22}.${(version shr 12) and 0x3FF}"
     }
 
     private fun getDisplayResolution(): String {
-        val wm = appContext.getSystemService(Context.WINDOW_SERVICE) as WindowManager
-        return try {
+        val displayManager = appContext.getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
+        val display = displayManager.getDisplay(Display.DEFAULT_DISPLAY)
+        val physical = runCatching {
+            display?.mode?.let { mode ->
+                val width = mode.physicalWidth
+                val height = mode.physicalHeight
+                if (width > 0 && height > 0) "${width}x${height}" else null
+            }
+        }.getOrNull()
+        if (!physical.isNullOrBlank()) return physical
+
+        return runCatching {
+            val windowManager = appContext.getSystemService(Context.WINDOW_SERVICE) as WindowManager
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                val bounds = wm.currentWindowMetrics.bounds
+                val bounds = windowManager.currentWindowMetrics.bounds
                 "${bounds.width()}x${bounds.height()}"
             } else {
                 @Suppress("DEPRECATION")
-                wm.defaultDisplay?.let { "${it.width}x${it.height}" } ?: "Unknown"
+                windowManager.defaultDisplay?.let { "${it.width}x${it.height}" } ?: "Unknown"
             }
-        } catch (e: Exception) {
-            "Unknown"
-        }
+        }.getOrDefault("Unknown")
     }
 
     private fun getDisplayDensityDpi(): Int = appContext.resources.displayMetrics.densityDpi
 
-    private fun getInternalTotalGb(): Long {
-        return try {
-            val stat = StatFs(Environment.getDataDirectory().path)
-            (stat.blockSizeLong * stat.blockCountLong) / (1024 * 1024 * 1024)
-        } catch (e: Exception) { File(appContext.filesDir.absolutePath).totalSpace / (1024 * 1024 * 1024) }
+    private fun getInternalTotalGb(): Long = runCatching {
+        val statFs = StatFs(Environment.getDataDirectory().path)
+        statFs.totalBytes / (1024 * 1024 * 1024)
+    }.getOrElse {
+        File(appContext.filesDir.absolutePath).totalSpace / (1024 * 1024 * 1024)
     }
 
-    private fun isSimSupported(): Boolean =
-        (appContext.getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager).phoneType != TelephonyManager.PHONE_TYPE_NONE
+    private fun isSimSupported(): Boolean = runCatching {
+        telephonyManager.phoneType != TelephonyManager.PHONE_TYPE_NONE ||
+            packageManager.hasSystemFeature(PackageManager.FEATURE_TELEPHONY)
+    }.getOrDefault(false)
 
-    @SuppressLint("MissingPermission")
-    private fun getBluetoothVersion(): String? {
-        return try {
-            val bm = appContext.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
-            if (bm.adapter == null) "Not Supported"
-            else if (appContext.packageManager.hasSystemFeature(PackageManager.FEATURE_BLUETOOTH_LE)) "BLE / 4.0+" else "Classic"
-        } catch (e: Exception) { "Unknown" }
-    }
+    private fun getBluetoothVersion(): String? = runCatching {
+        val bluetoothManager = appContext.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
+        when {
+            bluetoothManager.adapter == null -> "Not Supported"
+            packageManager.hasSystemFeature(PackageManager.FEATURE_BLUETOOTH_LE) -> "BLE / 4.0+"
+            packageManager.hasSystemFeature(PackageManager.FEATURE_BLUETOOTH) -> "Classic"
+            else -> "Unknown"
+        }
+    }.getOrNull() ?: "Unknown"
 
     private fun getTotalRamMb(): Long {
-        val mem = ActivityManager.MemoryInfo()
-        (appContext.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager).getMemoryInfo(mem)
-        return mem.totalMem / (1024 * 1024)
+        val memoryInfo = ActivityManager.MemoryInfo()
+        activityManager.getMemoryInfo(memoryInfo)
+        return memoryInfo.totalMem / (1024 * 1024)
     }
 
     private fun getSensorCount(): Int =
-        (appContext.getSystemService(Context.SENSOR_SERVICE) as SensorManager).getSensorList(android.hardware.Sensor.TYPE_ALL).size
+        (appContext.getSystemService(Context.SENSOR_SERVICE) as SensorManager).getSensorList(Sensor.TYPE_ALL).size
 
-    private fun getCameraHardwareLevel(): String {
-        if (cachedCameraLevel != null) return cachedCameraLevel!!
-        return try {
-            val cm = appContext.getSystemService(Context.CAMERA_SERVICE) as CameraManager
-            val ids = cm.cameraIdList
-            if (ids.isEmpty()) { cachedCameraLevel = "Unknown"; return "Unknown" }
-            val level = when (cm.getCameraCharacteristics(ids[0]).get(CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL)) {
-                CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL_LEGACY -> "Legacy"
-                CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL_LIMITED -> "Limited"
-                CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL_FULL -> "Full"
-                CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL_3 -> "Level 3"
-                else -> "Unknown"
-            }
-            cachedCameraLevel = level; level
-        } catch (e: Exception) { cachedCameraLevel = "Unknown"; "Unknown" }
-    }
-
-    private fun checkRoot(): Boolean {
-        try {
+    private fun detectRoot(): Boolean {
+        runCatching {
             val process = Runtime.getRuntime().exec(arrayOf("su", "-c", "id"))
             if (process.waitFor() == 0) return true
-        } catch (e: Exception) { /* Ігноруємо */ }
+        }
 
         val paths = arrayOf(
-            "/system/app/Superuser.apk", "/sbin/su", "/system/bin/su", "/system/xbin/su",
-            "/data/local/xbin/su", "/data/local/bin/su", "/system/sd/xbin/su",
-            "/system/bin/failsafe/su", "/data/local/su", "/su/bin/su",
-            "/sbin/magisk", "/data/adb/magisk", "/data/adb/ksu", "/data/adb/apatch"
+            "/system/app/Superuser.apk",
+            "/sbin/su",
+            "/system/bin/su",
+            "/system/xbin/su",
+            "/data/local/xbin/su",
+            "/data/local/bin/su",
+            "/system/sd/xbin/su",
+            "/system/bin/failsafe/su",
+            "/data/local/su",
+            "/su/bin/su",
+            "/sbin/magisk",
+            "/data/adb/magisk",
+            "/data/adb/ksu",
+            "/data/adb/apatch"
         )
         return paths.any { File(it).exists() }
     }
 
-    fun getRootManagerName(): String {
-        return try {
+    fun getRootManagerName(): String = rootManagerNameCache
+
+    private fun detectRootManagerName(): String {
+        return runCatching {
             val process = Runtime.getRuntime().exec(arrayOf("su", "-v"))
-            val output = process.inputStream.bufferedReader().use { it.readText() }.trim().uppercase()
+            val output = process.inputStream.bufferedReader().use { it.readText() }
+                .trim()
+                .uppercase(Locale.ROOT)
             process.waitFor()
 
             when {
                 output.contains("MAGISK") -> "Magisk"
                 output.contains("KERNELSU") || output.contains("KSU") -> "KernelSU"
                 output.contains("APATCH") -> "APatch"
-                output.isNotEmpty() -> "Rooted (Unknown: $output)"
-                else -> if (checkRoot()) "Rooted (Traditional)" else "None"
+                output.isNotEmpty() -> "Rooted ($output)"
+                isDeviceRooted -> "Rooted (Traditional)"
+                else -> "None"
             }
-        } catch (e: Exception) {
-            if (checkRoot()) "Rooted (Traditional/Hidden)" else "None"
+        }.getOrElse {
+            if (isDeviceRooted) "Rooted (Traditional/Hidden)" else "None"
         }
+    }
+
+    private fun readKernelVersion(): String {
+        val procVersion = readFirstLine("/proc/version")
+        if (!procVersion.isNullOrBlank()) return procVersion
+        return System.getProperty("os.version").orUnknown("Unknown")
     }
 
     @SuppressLint("PrivateApi")
     private fun getSystemProperty(key: String, def: String = ""): String {
-        return try {
-            val cls = Class.forName("android.os.SystemProperties")
-            val get = cls.getMethod("get", String::class.java, String::class.java)
-            get.invoke(cls, key, def) as String
-        } catch (e: Exception) { def }
+        systemPropertyCache[key]?.let { return if (it.isEmpty()) def else it }
+        val value = runCatching {
+            systemPropertiesGetMethod?.invoke(null, key, "") as? String
+        }.getOrNull().orEmpty().trim()
+        systemPropertyCache[key] = value
+        return if (value.isEmpty()) def else value
     }
+
+    private fun String?.orUnknown(fallback: String = "Unknown"): String =
+        this?.trim()?.takeIf(String::isNotEmpty) ?: fallback
 }

@@ -8,3 +8,8 @@ data class DeviceInfoItem(
     val value: String,
     val isError: Boolean = false
 )
+
+data class DeviceInfoSection(
+    val title: String,
+    val items: List<DeviceInfoItem>
+)
