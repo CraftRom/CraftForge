@@ -1,57 +1,49 @@
 package com.craftforge.app.ui.viewmodel
 
-import android.Manifest
-import android.annotation.SuppressLint
 import android.content.Context
-import androidx.annotation.RequiresPermission
 import androidx.compose.runtime.mutableStateOf
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
-import com.craftforge.app.data.DynamicDeviceInfo
-import com.craftforge.app.data.StaticDeviceInfo
 import com.craftforge.app.data.DeviceInfoItem
 import com.craftforge.app.data.DeviceInfoProvider
+import com.craftforge.app.data.DeviceInfoSection
+import com.craftforge.app.data.DynamicDeviceInfo
+import com.craftforge.app.data.StaticDeviceInfo
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.util.concurrent.TimeUnit
+import kotlin.math.roundToInt
 
 class DeviceDetailViewModel(context: Context) : ViewModel() {
 
     private val provider = DeviceInfoProvider(context)
     private var isUpdating = false
 
-    // ================= UI STATES =================
     val headData = mutableStateOf<List<DeviceInfoItem>>(emptyList())
-    val systemData = mutableStateOf<List<DeviceInfoItem>>(emptyList())
-    val cpuGpuData = mutableStateOf<List<DeviceInfoItem>>(emptyList())
-    val memoryData = mutableStateOf<List<DeviceInfoItem>>(emptyList())
-    val batteryDetailsData = mutableStateOf<List<DeviceInfoItem>>(emptyList())
-    val displayCameraData = mutableStateOf<List<DeviceInfoItem>>(emptyList())
-    val connectivityData = mutableStateOf<List<DeviceInfoItem>>(emptyList())
+    val systemData = mutableStateOf<List<DeviceInfoSection>>(emptyList())
+    val cpuGpuData = mutableStateOf<List<DeviceInfoSection>>(emptyList())
+    val memoryData = mutableStateOf<List<DeviceInfoSection>>(emptyList())
+    val batteryDetailsData = mutableStateOf<List<DeviceInfoSection>>(emptyList())
+    val displayCameraData = mutableStateOf<List<DeviceInfoSection>>(emptyList())
+    val connectivityData = mutableStateOf<List<DeviceInfoSection>>(emptyList())
 
-    // Стан для малювання графіка ЦП
     val cpuHistoryData = mutableStateOf<List<List<Float>>>(emptyList())
     val cpuMaxFreq = mutableStateOf(1f)
 
-    // ================= CACHE (Тільки незмінні дані) =================
     private var staticInfoCache: StaticDeviceInfo? = null
 
-    // Змінні для графіків
     private val maxHistoryPoints = 60
     private val coreHistoryMap = mutableMapOf<Int, MutableList<Float>>()
     private var maxObservedFreq = 1f
 
-    @SuppressLint("DefaultLocale")
-    @RequiresPermission(Manifest.permission.READ_PHONE_STATE)
     fun loadData() {
         if (isUpdating) return
         isUpdating = true
 
         viewModelScope.launch(Dispatchers.IO) {
-            // 1. Отримуємо СТАТИЧНІ дані ОДИН РАЗ
             try {
                 val staticInfo = provider.getStaticDeviceInfo()
                 staticInfoCache = staticInfo
@@ -60,89 +52,88 @@ class DeviceDetailViewModel(context: Context) : ViewModel() {
                 e.printStackTrace()
             }
 
-            // 2. Запускаємо цикл для ДИНАМІЧНИХ даних
             while (isActive) {
                 try {
-                    val staticCache = staticInfoCache
-                    if (staticCache != null) {
-                        val dynamicInfo = provider.getDynamicDeviceInfo()
-                        updateDynamicData(staticCache, dynamicInfo)
+                    staticInfoCache?.let { staticInfo ->
+                        updateDynamicData(staticInfo, provider.getDynamicDeviceInfo())
                     }
                 } catch (e: Exception) {
                     e.printStackTrace()
                 }
-                delay(1000L) // Оновлення кожну секунду
+                delay(1000L)
             }
         }
     }
 
     private fun initializeStaticData(info: StaticDeviceInfo) {
-        // --- 1. OVERVIEW ---
         headData.value = listOf(
-            DeviceInfoItem("Device", info.deviceName),
-            DeviceInfoItem("Model", info.model),
-            DeviceInfoItem("Manufacturer", info.manufacturer),
-            DeviceInfoItem("Brand", info.brand),
-            DeviceInfoItem("Codename", info.deviceCodename)
+            item("Device", info.deviceName),
+            item("Model", info.model),
+            item("Manufacturer", info.manufacturer),
+            item("Brand", info.brand),
+            item("Codename", info.deviceCodename)
         )
 
-        // --- 2. SYSTEM (Ці дані статичні, їх можна формувати раз) ---
         systemData.value = listOf(
-            DeviceInfoItem("Android Version", info.androidVersion),
-            DeviceInfoItem("API Level", info.apiLevel.toString()),
-            DeviceInfoItem("UI Version", info.miuiVersion),
-            DeviceInfoItem("Security Patch", info.securityPatch),
-
-            DeviceInfoItem("Build ID", info.buildId),
-            DeviceInfoItem("Build Type", info.buildType),
-            DeviceInfoItem("Build Fingerprint", info.buildFingerprint),
-            DeviceInfoItem("Supported ABIs", info.supportedAbis.joinToString(", ")),
-
-            DeviceInfoItem("Kernel Version", info.kernelVersion ?: "Unknown"),
-            DeviceInfoItem("Generic Kernel (GKI)", if (info.isGkiDevice) "Yes (Official)" else "No (Custom/Legacy)"),
-
-            DeviceInfoItem("Generic System (GSI)", if (info.isGsiDevice) "Yes (GSI/AOSP)" else "No (Stock/OEM)"),
-            DeviceInfoItem("Project Treble", if (info.isTrebleSupported) "Supported" else "Not Supported"),
-            DeviceInfoItem("System-As-Root (SAR)", if (info.isSystemAsRoot) "Yes" else "No"),
-            DeviceInfoItem(
-                label = "Dynamic Partitions",
-                value = when {
-                    info.isRetrofitDynamicPartitions -> "Yes (Retrofit)"
-                    info.isDynamicPartitions -> "Yes (Native)"
-                    else -> "No (Legacy Only)"
-                }
+            section(
+                "Android & ROM",
+                item("Android Version", info.androidVersion),
+                item("API Level", info.apiLevel.toString()),
+                item("ROM / UI", info.miuiVersion),
+                item("ROM Family", info.romFamily),
+                item("ROM Version", info.romVersion),
+                item("ROM Type", info.romType),
+                item("Security Patch", info.securityPatch),
+                item("Language", info.language),
+                item("Timezone", info.timezone)
             ),
-            DeviceInfoItem("Seamless Updates (A/B)", if (info.isSeamlessUpdateSupported) "Supported" else "Not Supported"),
-            DeviceInfoItem("Virtual A/B Status", info.virtualAbStatus),
-
-            DeviceInfoItem("Root Access", if (info.isRooted) "Granted" else "None"),
-            DeviceInfoItem("Root Manager", info.rootStatus),
-            // Widevine DRM Data
-            DeviceInfoItem("Vendor", info.widevineVendor),
-            DeviceInfoItem("Version", info.widevineVersion),
-            DeviceInfoItem("Description", info.widevineDescription),
-            DeviceInfoItem("Algorithms", info.widevineAlgorithms),
-            DeviceInfoItem("Widevine DRM Level", info.widevineSecurityLevel),
-            DeviceInfoItem("Max HDCP Level", info.widevineMaxHdcp),
-
-            DeviceInfoItem("Language", info.language),
-            DeviceInfoItem("Timezone", info.timezone)
+            section(
+                "Build & ABI",
+                item("Build ID", info.buildId),
+                item("Build Type", info.buildType),
+                item("Build Fingerprint", info.buildFingerprint),
+                item("Supported ABIs", info.supportedAbis.joinToString(", ").ifEmpty { "Unknown" })
+            ),
+            section(
+                "Kernel / Treble / Images",
+                item("Kernel Version", info.kernelVersion ?: "Unknown"),
+                item("GKI", info.gkiStatus),
+                item("GKI Evidence", info.gkiEvidence),
+                item("GSI", info.gsiStatus),
+                item("GSI Evidence", info.gsiEvidence),
+                item("Project Treble", yesNo(info.isTrebleSupported, "Supported", "Not Supported")),
+                item("System-As-Root", yesNo(info.isSystemAsRoot)),
+                item(
+                    "Dynamic Partitions",
+                    when {
+                        info.isRetrofitDynamicPartitions -> "Retrofit"
+                        info.isDynamicPartitions -> "Native"
+                        else -> "Legacy"
+                    }
+                ),
+                item("Seamless Updates (A/B)", yesNo(info.isSeamlessUpdateSupported, "Supported", "Not Supported")),
+                item("Virtual A/B", info.virtualAbStatus)
+            ),
+            section(
+                "Security & DRM",
+                item("Root Access", yesNo(info.isRooted, "Granted", "None")),
+                item("Root Manager", info.rootStatus),
+                item("Widevine Vendor", info.widevineVendor),
+                item("Widevine Version", info.widevineVersion),
+                item("Widevine Level", info.widevineSecurityLevel),
+                item("Max HDCP", info.widevineMaxHdcp),
+                item("DRM Description", info.widevineDescription),
+                item("DRM Algorithms", info.widevineAlgorithms)
+            )
         )
 
-        // Оновлюємо початкову макс. частоту ЦП
-        val trueMax = info.cpuMaxFrequencies.maxOrNull()?.toFloat()
-        if (trueMax != null && trueMax > 0f) {
-            maxObservedFreq = trueMax
-            cpuMaxFreq.value = trueMax
+        info.cpuMaxFrequencies.maxOrNull()?.toFloat()?.takeIf { it > 0f }?.let { maxFreq ->
+            maxObservedFreq = maxFreq
+            cpuMaxFreq.value = maxFreq
         }
     }
 
-    // ОПТИМІЗОВАНО: Тепер ми повністю збираємо списки наново, комбінуючи статику та динаміку.
-    // Ніяких `.add(index, ...)` !
-    @SuppressLint("DefaultLocale")
     private fun updateDynamicData(static: StaticDeviceInfo, dynamic: DynamicDeviceInfo) {
-
-        // ================= CPU & GPU =================
         val freqs = dynamic.cpuFrequencies
         val currentMax = freqs.maxOrNull()?.toFloat() ?: 1f
         if (currentMax > maxObservedFreq) {
@@ -152,114 +143,170 @@ class DeviceDetailViewModel(context: Context) : ViewModel() {
 
         freqs.forEachIndexed { index, freq ->
             val list = coreHistoryMap.getOrPut(index) { mutableListOf() }
-            val percentage = (freq.toFloat() / maxObservedFreq) * 100f
+            val percentage = if (maxObservedFreq > 0f) (freq.toFloat() / maxObservedFreq) * 100f else 0f
             list.add(percentage)
             if (list.size > maxHistoryPoints) list.removeAt(0)
         }
-        cpuHistoryData.value = coreHistoryMap.values.map { it.toList() }
+        cpuHistoryData.value = coreHistoryMap.toSortedMap().values.map { it.toList() }
 
-        // Збираємо список CPU/GPU чисто, без індексів
+        val ramUsedPercent = percent(dynamic.ramUsedMb, static.ramTotalMb)
+        val storageUsedGb = (static.internalTotalGb - dynamic.internalFreeGb).coerceAtLeast(0)
+        val storageUsedPercent = percent(storageUsedGb, static.internalTotalGb)
+        val chargePowerText = if (dynamic.isCharging && dynamic.batteryPowerWatts > 0.0) {
+            "${"%.1f".format(dynamic.batteryPowerWatts)} W"
+        } else {
+            "Not Charging"
+        }
+        val cycleText = dynamic.batteryCycleCount.takeIf { it > 0 }?.toString() ?: "Unknown / Not Supported"
+        val timeRemainingText = formatChargeTime(dynamic.chargeTimeRemainingMs)
+        val uptimeFormat = formatDuration(dynamic.systemUptimeMs)
+
         cpuGpuData.value = listOf(
-            DeviceInfoItem("SoC Manufacturer", static.socManufacturer.ifEmpty { "Unknown" }),
-            DeviceInfoItem("SoC Model", static.socModel.ifEmpty { "Unknown" }),
-            DeviceInfoItem("Hardware SKU", static.hardwareSku.ifEmpty { "Unknown" }),
-            DeviceInfoItem("ODM SKU", static.odmSku.ifEmpty { "Unknown" }),
-            DeviceInfoItem("Board", static.board ?: "Unknown"),
-            DeviceInfoItem("Hardware", static.hardware ?: "Unknown"),
-            DeviceInfoItem("CPU Architecture", static.cpuArchitecture),
-            DeviceInfoItem("CPU Cores", static.cpuCoreCount.toString()),
-            DeviceInfoItem("Max Frequencies", static.cpuMaxFrequencies.joinToString(", ") { "$it MHz" }.ifEmpty { "Unknown" }),
-
-            // Динамічні дані CPU
-            DeviceInfoItem("CPU Governor", dynamic.cpuGovernor ?: "Unknown"),
-            DeviceInfoItem("CPU Temperature", dynamic.cpuTemperatureC?.let { "$it°C" } ?: "Unknown"),
-            DeviceInfoItem("Thermal Status", dynamic.thermalThrottlingStatus),
-
-            // GPU
-            DeviceInfoItem("GPU Renderer", static.gpuRenderer),
-            DeviceInfoItem("GPU Vendor", static.gpuVendor),
-            DeviceInfoItem("OpenGL Version", static.gpuOpenGlVersion),
-            DeviceInfoItem("Vulkan Version", static.gpuVulkanVersion ?: "Not Supported")
+            section(
+                "Chipset & CPU",
+                item("SoC Manufacturer", static.socManufacturer),
+                item("SoC Model", static.socModel),
+                item("Hardware SKU", static.hardwareSku),
+                item("ODM SKU", static.odmSku),
+                item("Board", static.board ?: "Unknown"),
+                item("Hardware", static.hardware ?: "Unknown"),
+                item("CPU Architecture", static.cpuArchitecture),
+                item("CPU Cores", static.cpuCoreCount.toString()),
+                item("Max Frequencies", static.cpuMaxFrequencies.joinToString(", ") { "$it MHz" }.ifEmpty { "Unknown" })
+            ),
+            section(
+                "Live CPU",
+                item("CPU Governor", dynamic.cpuGovernor ?: "Unknown"),
+                item("Current Frequencies", dynamic.cpuFrequencies.joinToString(", ") { "$it MHz" }.ifEmpty { "Unavailable" }),
+                item("CPU Temperature", dynamic.cpuTemperatureC?.let { "${"%.1f".format(it)}°C" } ?: "Unknown"),
+                item("Thermal Status", dynamic.thermalThrottlingStatus)
+            ),
+            section(
+                "GPU",
+                item("GPU Renderer", static.gpuRenderer),
+                item("GPU Vendor", static.gpuVendor),
+                item("OpenGL Version", static.gpuOpenGlVersion),
+                item("Vulkan Version", static.gpuVulkanVersion ?: "Not Supported")
+            )
         )
 
-        // ================= MEMORY =================
         memoryData.value = listOf(
-            DeviceInfoItem("RAM Total", "${static.ramTotalMb} MB"),
-            DeviceInfoItem("RAM Used", "${dynamic.ramUsedMb} MB"),
-            DeviceInfoItem("RAM Free", "${dynamic.ramFreeMb} MB"),
-            DeviceInfoItem("Java Heap Size (Dalvik)", "${static.dalvikHeapSizeMb} MB"),
-            DeviceInfoItem("Low RAM Device", if (static.isLowRamDevice) "Yes" else "No"),
-            DeviceInfoItem("Internal Storage Total", "${static.internalTotalGb} GB"),
-            DeviceInfoItem("Internal Storage Free", "${dynamic.internalFreeGb} GB")
+            section(
+                "RAM",
+                item("RAM Total", formatMb(static.ramTotalMb)),
+                item("RAM Used", formatMb(dynamic.ramUsedMb)),
+                item("RAM Free", formatMb(dynamic.ramFreeMb)),
+                item("RAM Usage", "$ramUsedPercent%"),
+                item("Java Heap (Dalvik)", "${static.dalvikHeapSizeMb} MB"),
+                item("Low RAM Device", yesNo(static.isLowRamDevice))
+            ),
+            section(
+                "Storage",
+                item("Internal Storage Total", "${static.internalTotalGb} GB"),
+                item("Internal Storage Used", "$storageUsedGb GB"),
+                item("Internal Storage Free", "${dynamic.internalFreeGb} GB"),
+                item("Storage Usage", "$storageUsedPercent%")
+            )
         )
 
-        // ================= DISPLAY & CAMERA =================
         displayCameraData.value = listOf(
-            DeviceInfoItem("Resolution", static.displayResolution),
-            DeviceInfoItem("Refresh Rate", "${dynamic.displayRefreshRate} Hz"),
-            DeviceInfoItem("Pixel Density", "${static.displayDensityDpi} DPI"),
-            DeviceInfoItem("HDR Support", if (static.isHdrSupported) "Yes" else "No"),
-            DeviceInfoItem("Wide Color Gamut", if (static.isWideColorGamutSupported) "Supported" else "Standard"),
-            DeviceInfoItem("Multitouch", static.displayMultitouch),
-            DeviceInfoItem("Rear Camera", static.rearCameraMegapixels),
-            DeviceInfoItem("Front Camera", static.frontCameraMegapixels),
-            DeviceInfoItem("Camera Hardware Level", static.cameraHardwareLevel),
-            DeviceInfoItem("Concurrent Cameras", if (static.isConcurrentCameraSupported) "Supported" else "Not Supported")
+            section(
+                "Display",
+                item("Resolution", static.displayResolution),
+                item("Refresh Rate", "${dynamic.displayRefreshRate} Hz"),
+                item("Pixel Density", "${static.displayDensityDpi} DPI"),
+                item("HDR", yesNo(static.isHdrSupported)),
+                item("Wide Color Gamut", yesNo(static.isWideColorGamutSupported, "Supported", "Standard")),
+                item("Multitouch", static.displayMultitouch)
+            ),
+            section(
+                "Camera",
+                item("Rear Camera", static.rearCameraMegapixels),
+                item("Front Camera", static.frontCameraMegapixels),
+                item("Camera Hardware Level", static.cameraHardwareLevel),
+                item("Concurrent Cameras", yesNo(static.isConcurrentCameraSupported, "Supported", "Not Supported"))
+            )
         )
 
-        // ================= CONNECTIVITY =================
         connectivityData.value = listOf(
-            DeviceInfoItem("SIM Supported", if (static.simSupported) "Yes" else "No"),
-            DeviceInfoItem("Active SIM Slots", static.activeSimCount.toString()),
-            DeviceInfoItem("eSIM Support", if (static.isEsimSupported) "Yes" else "No"),
-
-            DeviceInfoItem("Network Operator", dynamic.networkOperator ?: "None"),
-            DeviceInfoItem("Data Network Type", dynamic.networkType ?: "Unknown"),
-            DeviceInfoItem("IPv4 Address", dynamic.ipv4Address),
-            DeviceInfoItem("IPv6 Address", dynamic.ipv6Address),
-
-            DeviceInfoItem("Wi-Fi Supported", if (static.isWifiSupported) "Yes" else "No"),
-            DeviceInfoItem("Wi-Fi Standard", dynamic.wifiStandard ?: "Unknown"),
-            DeviceInfoItem("Wi-Fi Link Speed", dynamic.wifiLinkSpeedMbps?.let { "$it Mbps" } ?: "Unknown"),
-
-            DeviceInfoItem("Bluetooth Supported", if (static.isBluetoothSupported) "Yes" else "No"),
-            DeviceInfoItem("Bluetooth Version", static.bluetoothVersion ?: "Unknown"),
-            DeviceInfoItem("NFC Supported", if (static.isNfcSupported) "Yes" else "No"),
-            DeviceInfoItem("Ultra-Wideband (UWB)", if (static.isUwbSupported) "Yes" else "No"),
-            DeviceInfoItem("Total Sensors", static.sensorCount.toString()),
-            DeviceInfoItem("Fingerprint Sensor", if (static.hasFingerprintSensor) "Present" else "Absent")
-        )
-
-        // ================= BATTERY =================
-        val powerText = if (dynamic.isCharging && dynamic.batteryPowerWatts > 0.0) "${dynamic.batteryPowerWatts} W" else "Not Charging"
-        val cycleText = if (dynamic.batteryCycleCount != -1) "${dynamic.batteryCycleCount}" else "Unknown / Not Supported"
-
-        val timeRemainingText = if (dynamic.chargeTimeRemainingMs > 0) {
-            val mins = TimeUnit.MILLISECONDS.toMinutes(dynamic.chargeTimeRemainingMs)
-            if (mins > 60) "${mins / 60}h ${mins % 60}m" else "$mins mins"
-        } else "Unknown"
-
-        val uptimeFormat = String.format(
-            "%02d hrs %02d mins %02d secs",
-            TimeUnit.MILLISECONDS.toHours(dynamic.systemUptimeMs),
-            TimeUnit.MILLISECONDS.toMinutes(dynamic.systemUptimeMs) % 60,
-            TimeUnit.MILLISECONDS.toSeconds(dynamic.systemUptimeMs) % 60
+            section(
+                "Telephony",
+                item("SIM Supported", yesNo(static.simSupported)),
+                item("Active SIM Slots", static.activeSimCount.toString()),
+                item("eSIM Support", yesNo(static.isEsimSupported)),
+                item("Network Operator", dynamic.networkOperator ?: "None"),
+                item("Data Network Type", dynamic.networkType ?: "Unknown")
+            ),
+            section(
+                "Network",
+                item("IPv4 Address", dynamic.ipv4Address),
+                item("IPv6 Address", dynamic.ipv6Address),
+                item("Wi‑Fi Supported", yesNo(static.isWifiSupported)),
+                item("Wi‑Fi Standard", dynamic.wifiStandard ?: "Unknown"),
+                item("Wi‑Fi Link Speed", dynamic.wifiLinkSpeedMbps?.let { "$it Mbps" } ?: "Unknown")
+            ),
+            section(
+                "Wireless & Sensors",
+                item("Bluetooth Supported", yesNo(static.isBluetoothSupported)),
+                item("Bluetooth Version", static.bluetoothVersion ?: "Unknown"),
+                item("NFC Supported", yesNo(static.isNfcSupported)),
+                item("UWB", yesNo(static.isUwbSupported)),
+                item("Fingerprint Sensor", yesNo(static.hasFingerprintSensor, "Present", "Absent")),
+                item("Total Sensors", static.sensorCount.toString())
+            )
         )
 
         batteryDetailsData.value = listOf(
-            DeviceInfoItem("Battery Health", dynamic.batteryHealth),
-            DeviceInfoItem("Battery Status", dynamic.batteryStatus),
-            DeviceInfoItem("Technology", dynamic.batteryTechnology),
-            DeviceInfoItem("Power Source", dynamic.chargingSource),
-            DeviceInfoItem("Fast Charging", if (dynamic.isFastCharging) "Yes" else "No"),
-            DeviceInfoItem("Time to Full", timeRemainingText),
-            DeviceInfoItem("Battery Voltage", "${dynamic.batteryVoltageMv} mV"),
-            DeviceInfoItem("Battery Current", "${dynamic.batteryCurrentMa} mA"),
-            DeviceInfoItem("Charging Power", powerText),
-            DeviceInfoItem("Battery Temperature", "${dynamic.batteryTemperatureC}°C"),
-            DeviceInfoItem("Battery Cycles", cycleText),
-            DeviceInfoItem("System Uptime", uptimeFormat)
+            section(
+                "Battery State",
+                item("Battery Level", "${dynamic.batteryPercent}%"),
+                item("Battery Status", dynamic.batteryStatus),
+                item("Power Source", dynamic.chargingSource),
+                item("Fast Charging", yesNo(dynamic.isFastCharging)),
+                item("Time to Full", timeRemainingText)
+            ),
+            section(
+                "Battery Health",
+                item("Health", dynamic.batteryHealth),
+                item("Technology", dynamic.batteryTechnology),
+                item("Temperature", if (dynamic.batteryTemperatureC >= 0f) "${"%.1f".format(dynamic.batteryTemperatureC)}°C" else "Unknown"),
+                item("Voltage", if (dynamic.batteryVoltageMv > 0) "${dynamic.batteryVoltageMv} mV" else "Unknown"),
+                item("Current", if (dynamic.batteryCurrentMa > 0) "${dynamic.batteryCurrentMa} mA" else "Unknown"),
+                item("Charging Power", chargePowerText),
+                item("Cycle Count", cycleText)
+            ),
+            section(
+                "Runtime",
+                item("System Uptime", uptimeFormat)
+            )
         )
+    }
+
+    private fun section(title: String, vararg items: DeviceInfoItem) =
+        DeviceInfoSection(title = title, items = items.filter { it.value.isNotBlank() })
+
+    private fun item(label: String, value: String) = DeviceInfoItem(label, value.ifBlank { "Unknown" })
+
+    private fun yesNo(value: Boolean, yes: String = "Yes", no: String = "No") = if (value) yes else no
+
+    private fun formatMb(value: Long): String = "${value} MB"
+
+    private fun percent(used: Long, total: Long): Int =
+        if (total > 0) ((used.toDouble() / total.toDouble()) * 100.0).roundToInt() else 0
+
+    private fun formatChargeTime(valueMs: Long): String {
+        if (valueMs <= 0L) return "Unknown"
+        val totalMinutes = TimeUnit.MILLISECONDS.toMinutes(valueMs)
+        val hours = totalMinutes / 60
+        val minutes = totalMinutes % 60
+        return if (hours > 0) "${hours}h ${minutes}m" else "${minutes} min"
+    }
+
+    private fun formatDuration(valueMs: Long): String {
+        val hours = TimeUnit.MILLISECONDS.toHours(valueMs)
+        val minutes = TimeUnit.MILLISECONDS.toMinutes(valueMs) % 60
+        val seconds = TimeUnit.MILLISECONDS.toSeconds(valueMs) % 60
+        return "%02dh %02dm %02ds".format(hours, minutes, seconds)
     }
 
     companion object {
