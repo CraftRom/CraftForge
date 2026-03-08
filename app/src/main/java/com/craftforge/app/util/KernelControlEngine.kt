@@ -1,16 +1,17 @@
 package com.craftforge.app.util
 
+import android.os.Build
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import java.util.concurrent.ConcurrentHashMap
 
 object KernelControlEngine {
 
     private const val TAG = "KernelControlEngine"
 
-    // ----------------------------
-    // Models
-    // ----------------------------
     data class CpuCore(val id: Int, val onlinePath: String?)
 
     data class CpuCluster(
@@ -25,6 +26,14 @@ object KernelControlEngine {
     )
 
     data class ThermalInfo(val throttlingPath: String?, val tempPath: String?)
+
+    data class RuntimeProfile(
+        val romFamily: String = "Android",
+        val vendorFamily: String = "Generic",
+        val socFamily: String = "Generic",
+        val kernelFlavor: String = "Unknown",
+        val hints: List<String> = emptyList()
+    )
 
     data class SupportSnapshot(
         val eas: Boolean = false,
@@ -57,98 +66,56 @@ object KernelControlEngine {
         }
     }
 
-    // ----------------------------
-    // Resolver cache (запам’ятовуємо коректні ноди)
-    // ----------------------------
-    private val resolved = mutableMapOf<String, String>()         // key -> path
-    private val unsupported = mutableSetOf<String>()              // key -> unsupported
-    @Volatile
-    private var supportSnapshotCache: SupportSnapshot? = null
+    private val resolved = ConcurrentHashMap<String, String>()
+    private val unsupported = ConcurrentHashMap.newKeySet<String>()
+    private val writeLocks = ConcurrentHashMap<String, Mutex>()
+
+    @Volatile private var supportSnapshotCache: SupportSnapshot? = null
+    @Volatile private var cpuClusterCache: List<CpuCluster>? = null
+    @Volatile private var runtimeProfileCache: RuntimeProfile? = null
 
     fun isSupported(key: String): Boolean = !unsupported.contains(key)
 
-    private fun norm(v: String): String = v.trim().split(Regex("\\s+")).firstOrNull().orEmpty()
+    private fun norm(v: String): String = v.trim().split(Regex("s+")).firstOrNull().orEmpty()
 
-    private fun shQuote(s: String): String = "'" + s.replace("'", "'\\''") + "'"
+    private fun getProp(name: String): String = runCatching {
+        val cls = Class.forName("android.os.SystemProperties")
+        val m = cls.getMethod("get", String::class.java, String::class.java)
+        (m.invoke(null, name, "") as? String).orEmpty().trim()
+    }.getOrDefault("")
 
-    private suspend fun existsFile(path: String): Boolean = withContext(Dispatchers.IO) {
-        val r = RootManager.execRoot("[ -f ${shQuote(path)} ] && echo 1 || echo 0")
-        r.ok && r.out.trim() == "1"
-    }
+    private fun read(path: String): String? = RootManager.readNode(path)
 
-    private suspend fun read(path: String): String? = withContext(Dispatchers.IO) {
-        if (!existsFile(path)) return@withContext null
-        val r = RootManager.execRoot("cat ${shQuote(path)}")
-        if (!r.ok) null else r.out.trim()
-    }
-
-    /**
-     * Пише кількома способами і робить readback.
-     * Повертає діагностику (before/after/method/reason).
-     */
     private suspend fun writeRaw(path: String, value: String, key: String): WriteResult = withContext(Dispatchers.IO) {
-        if (!existsFile(path)) {
+        if (!RootManager.nodeExists(path)) {
             return@withContext WriteResult(false, key, path, value, null, null, null, "node_missing")
         }
 
         val before = read(path)
-        val v = norm(value)
+        val target = norm(value)
+        if (before != null && norm(before) == target) {
+            return@withContext WriteResult(true, key, path, target, before, before, "noop_same_value", null)
+        }
 
-        suspend fun verify(method: String): WriteResult {
+        val lock = writeLocks.getOrPut(path) { Mutex() }
+        lock.withLock {
+            val latestBefore = read(path)
+            if (latestBefore != null && norm(latestBefore) == target) {
+                return@withLock WriteResult(true, key, path, target, latestBefore, latestBefore, "noop_same_value", null)
+            }
+
+            val result = RootManager.writeNode(path, target, verify = true)
             val after = read(path)
-            val ok = after != null && norm(after) == v
-            return if (ok) {
-                WriteResult(true, key, path, v, before, after, method, null)
+            val ok = result.ok && after != null && norm(after) == target
+            RootManager.invalidateNodeCache(path)
+            return@withLock if (ok) {
+                WriteResult(true, key, path, target, latestBefore, after, "root_write", null)
             } else {
-                WriteResult(false, key, path, v, before, after, method, "readback_mismatch_or_rejected")
+                WriteResult(false, key, path, target, latestBefore, after, "root_write", result.err.ifBlank { "readback_mismatch_or_rejected" })
             }
         }
-
-        // Методи запису (актуальні для su в Magisk/KernelSU/APatch: все одно йде через su -c sh -c)
-        // 1) echo >
-        run {
-            RootManager.execRoot("sh -c ${shQuote("echo $v > ${shQuote(path)}")}")
-            val r = verify("echo_redirect")
-            if (r.ok) return@withContext r
-        }
-        // 2) printf >
-        run {
-            RootManager.execRoot("sh -c ${shQuote("printf %s $v > ${shQuote(path)}")}")
-            val r = verify("printf_redirect")
-            if (r.ok) return@withContext r
-        }
-        // 3) echo | tee
-        run {
-            RootManager.execRoot("sh -c ${shQuote("echo $v | tee ${shQuote(path)} >/dev/null")}")
-            val r = verify("echo_tee")
-            if (r.ok) return@withContext r
-        }
-        // 4) printf | tee
-        run {
-            RootManager.execRoot("sh -c ${shQuote("printf %s $v | tee ${shQuote(path)} >/dev/null")}")
-            val r = verify("printf_tee")
-            if (r.ok) return@withContext r
-        }
-
-        return@withContext WriteResult(
-            ok = false,
-            key = key,
-            path = path,
-            value = v,
-            before = before,
-            after = read(path),
-            method = "all_failed",
-            reason = "rejected_by_kernel_or_requires_constraints"
-        )
     }
 
-    /**
-     * Resolver:
-     * - бере candidates
-     * - шукає існуючі
-     * - якщо треба write-перевірка — робить safe-test: пише ТО САМЕ значення (no-op), перевіряє readback
-     * - запам’ятовує робочий path
-     */
     private suspend fun resolveNode(
         key: String,
         candidates: List<String>,
@@ -157,33 +124,23 @@ object KernelControlEngine {
         resolved[key]?.let { return@withContext it }
         if (unsupported.contains(key)) return@withContext null
 
-        val existing = candidates.filter { existsFile(it) }
+        val existing = candidates.distinct().filter { RootManager.nodeExists(it) }
         if (existing.isEmpty()) {
             unsupported.add(key)
             Log.w(TAG, "resolve: no existing node for key=$key candidates=${candidates.size}")
             return@withContext null
         }
 
-        if (!verifyWriteNoop) {
-            val pick = existing.first()
-            resolved[key] = pick
-            Log.i(TAG, "resolve: key=$key -> $pick (no write verify)")
-            return@withContext pick
+        val pick = if (!verifyWriteNoop) {
+            existing.firstOrNull()
+        } else {
+            existing.firstOrNull { RootManager.nodeWritable(it) }
         }
 
-        // write-noop verify: читаємо поточне, пробуємо записати це ж саме (має спрацювати якщо node реально доступний)
-        for (p in existing) {
-            val cur = read(p)
-            if (cur.isNullOrBlank()) continue
-
-            val test = writeRaw(p, norm(cur), key)
-            if (test.ok) {
-                resolved[key] = p
-                Log.i(TAG, "resolve: key=$key -> $p (verified)")
-                return@withContext p
-            } else {
-                Log.w(TAG, "resolve: key=$key candidate=$p -> ${test.short()}")
-            }
+        if (pick != null) {
+            resolved[key] = pick
+            Log.i(TAG, "resolve: key=$key -> $pick verifyWrite=$verifyWriteNoop")
+            return@withContext pick
         }
 
         unsupported.add(key)
@@ -191,73 +148,166 @@ object KernelControlEngine {
         null
     }
 
-    // ----------------------------
-    // CPU: detect clusters by policy*
-    // ----------------------------
-    suspend fun detectCpuClusters(): List<CpuCluster> = withContext(Dispatchers.IO) {
+    fun getRuntimeProfile(forceRefresh: Boolean = false): RuntimeProfile {
+        if (forceRefresh) runtimeProfileCache = null
+        runtimeProfileCache?.let { return it }
+
+        val vendor = Build.MANUFACTURER.orEmpty().ifBlank { Build.BRAND.orEmpty() }.ifBlank { "Generic" }
+        val hardware = Build.HARDWARE.orEmpty().lowercase()
+        val board = Build.BOARD.orEmpty().lowercase()
+        val fingerprint = Build.FINGERPRINT.orEmpty().lowercase()
+        val kernelVersion = RootManager.readNodeViaRoot("cat /proc/version")?.lowercase().orEmpty()
+
+        val romFamily = when {
+            getProp("ro.mi.os.version.name").isNotBlank() || getProp("ro.mi.os.version.code").isNotBlank() -> "HyperOS"
+            getProp("ro.miui.ui.version.name").isNotBlank() -> "MIUI"
+            getProp("ro.build.version.oneui").isNotBlank() -> "One UI"
+            getProp("ro.build.version.oplusrom").isNotBlank() || getProp("ro.build.version.opporom").isNotBlank() -> "ColorOS"
+            getProp("ro.build.version.realmeui").isNotBlank() -> "realme UI"
+            getProp("ro.oxygen.version").isNotBlank() || getProp("ro.build.version.oxygen").isNotBlank() -> "OxygenOS"
+            getProp("ro.vivo.os.version").isNotBlank() -> "Funtouch / OriginOS"
+            getProp("ro.build.version.emui").isNotBlank() -> "EMUI"
+            getProp("ro.lineage.version").isNotBlank() -> "LineageOS"
+            getProp("ro.crdroid.version").isNotBlank() -> "crDroid"
+            vendor.equals("Google", ignoreCase = true) || fingerprint.contains("pixel") -> "Pixel UI"
+            fingerprint.contains("aosp") || getProp("ro.build.flavor").contains("aosp", ignoreCase = true) -> "AOSP-like"
+            else -> vendor.ifBlank { "Android" }
+        }
+
+        val socFamily = when {
+            hardware.contains("qcom") || hardware.contains("kona") || hardware.contains("kalama") || board.contains("sm") -> "Qualcomm"
+            hardware.contains("mt") || hardware.contains("mediatek") || board.contains("mt") -> "MediaTek"
+            hardware.contains("exynos") || board.contains("exynos") -> "Samsung Exynos"
+            hardware.contains("gs") || fingerprint.contains("tensor") -> "Google Tensor"
+            hardware.contains("kirin") || board.contains("kirin") -> "HiSilicon Kirin"
+            hardware.contains("ums") || hardware.contains("sc") || board.contains("sp") -> "UNISOC"
+            else -> "Generic"
+        }
+
+        val kernelFlavor = when {
+            kernelVersion.contains("-gki") || kernelVersion.contains("android") -> "GKI-like"
+            kernelVersion.isNotBlank() -> kernelVersion.substringBefore("#").take(48)
+            else -> "Unknown"
+        }
+
+        val hints = buildList {
+            add(romFamily)
+            add(socFamily)
+            if (kernelFlavor == "GKI-like") add("GKI")
+            if (romFamily == "HyperOS" || romFamily == "MIUI") add("Xiaomi")
+            if (romFamily == "One UI") add("Samsung")
+        }.distinct()
+
+        return RuntimeProfile(
+            romFamily = romFamily,
+            vendorFamily = vendor,
+            socFamily = socFamily,
+            kernelFlavor = kernelFlavor,
+            hints = hints
+        ).also { runtimeProfileCache = it }
+    }
+
+    suspend fun detectCpuClusters(forceRefresh: Boolean = false): List<CpuCluster> = withContext(Dispatchers.IO) {
+        if (!forceRefresh) {
+            cpuClusterCache?.let { return@withContext it }
+        }
+
         val clusters = mutableListOf<CpuCluster>()
         var policyId = 0
 
+        fun existingFile(path: String): String? = if (RootManager.nodeExists(path)) path else null
+
         while (true) {
             val policyPath = "/sys/devices/system/cpu/cpufreq/policy$policyId"
-            val dirOk = RootManager.readNodeViaRoot("[ -d ${shQuote(policyPath)} ] && echo 1 || echo 0") == "1"
-            if (!dirOk) break
+            if (!RootManager.nodeExists(policyPath)) break
 
-            val related = RootManager.readNodeViaRoot("cat ${shQuote("$policyPath/related_cpus")}")?.trim().orEmpty()
+            val related = RootManager.readNode(policyPath + "/related_cpus")?.trim().orEmpty()
             val coreIds = related.split(" ").mapNotNull { it.toIntOrNull() }.distinct().sorted()
-
             val cores = coreIds.map { id -> CpuCore(id, "/sys/devices/system/cpu/cpu$id/online") }
-
-            fun f(p: String) = if (RootManager.readNodeViaRoot("[ -f ${shQuote(p)} ] && echo 1 || echo 0") == "1") p else null
-
-            val minFreqPath = f("$policyPath/scaling_min_freq")
-            val maxFreqPath = f("$policyPath/scaling_max_freq")
-            val govPath = f("$policyPath/scaling_governor")
-            val availableGovsPath = f("$policyPath/scaling_available_governors")
-            val availableFreqsPath = f("$policyPath/scaling_available_frequencies")
 
             clusters += CpuCluster(
                 id = policyId,
                 policyPath = policyPath,
                 cores = cores,
-                minFreqPath = minFreqPath,
-                maxFreqPath = maxFreqPath,
-                govPath = govPath,
-                availableGovsPath = availableGovsPath,
-                availableFreqsPath = availableFreqsPath
+                minFreqPath = existingFile("$policyPath/scaling_min_freq") ?: existingFile("$policyPath/cpuinfo_min_freq"),
+                maxFreqPath = existingFile("$policyPath/scaling_max_freq") ?: existingFile("$policyPath/cpuinfo_max_freq"),
+                govPath = existingFile("$policyPath/scaling_governor"),
+                availableGovsPath = existingFile("$policyPath/scaling_available_governors"),
+                availableFreqsPath = existingFile("$policyPath/scaling_available_frequencies")
             )
-
             policyId++
         }
+
+        if (clusters.isEmpty()) {
+            val discovered = mutableListOf<String>()
+            var cpuId = 0
+            while (cpuId < 12) {
+                val cpuBase = "/sys/devices/system/cpu/cpu$cpuId/cpufreq"
+                if (RootManager.nodeExists(cpuBase)) discovered += cpuBase
+                cpuId++
+            }
+            discovered.distinct().forEachIndexed { idx, base ->
+                clusters += CpuCluster(
+                    id = idx,
+                    policyPath = base,
+                    cores = listOf(CpuCore(idx, "/sys/devices/system/cpu/cpu$idx/online")),
+                    minFreqPath = existingFile("$base/scaling_min_freq") ?: existingFile("$base/cpuinfo_min_freq"),
+                    maxFreqPath = existingFile("$base/scaling_max_freq") ?: existingFile("$base/cpuinfo_max_freq"),
+                    govPath = existingFile("$base/scaling_governor"),
+                    availableGovsPath = existingFile("$base/scaling_available_governors"),
+                    availableFreqsPath = existingFile("$base/scaling_available_frequencies")
+                )
+            }
+        }
+
+        cpuClusterCache = clusters
         clusters
     }
 
-    suspend fun readClusterGovernor(cluster: CpuCluster): String =
-        withContext(Dispatchers.IO) { cluster.govPath?.let { read(it) } ?: "Unknown" }
+    suspend fun readClusterGovernor(cluster: CpuCluster): String = withContext(Dispatchers.IO) {
+        cluster.govPath?.let { read(it) } ?: "Unknown"
+    }
 
-    suspend fun readClusterMinFreqKHz(cluster: CpuCluster): Long =
-        withContext(Dispatchers.IO) { cluster.minFreqPath?.let { read(it)?.toLongOrNull() } ?: 0L }
+    suspend fun readClusterMinFreqKHz(cluster: CpuCluster): Long = withContext(Dispatchers.IO) {
+        cluster.minFreqPath?.let { read(it)?.toLongOrNull() } ?: 0L
+    }
 
-    suspend fun readClusterMaxFreqKHz(cluster: CpuCluster): Long =
-        withContext(Dispatchers.IO) { cluster.maxFreqPath?.let { read(it)?.toLongOrNull() } ?: 0L }
+    suspend fun readClusterMaxFreqKHz(cluster: CpuCluster): Long = withContext(Dispatchers.IO) {
+        cluster.maxFreqPath?.let { read(it)?.toLongOrNull() } ?: 0L
+    }
 
-    suspend fun readClusterAvailableGovernors(cluster: CpuCluster): List<String> =
-        withContext(Dispatchers.IO) {
-            val path = cluster.availableGovsPath
-                ?: "/sys/devices/system/cpu/cpu${cluster.cores.firstOrNull()?.id ?: 0}/cpufreq/scaling_available_governors"
-            read(path)?.split(" ")?.map { it.trim() }?.filter { it.isNotBlank() } ?: emptyList()
-        }
+    suspend fun readClusterAvailableGovernors(cluster: CpuCluster): List<String> = withContext(Dispatchers.IO) {
+        val path = cluster.availableGovsPath
+            ?: "/sys/devices/system/cpu/cpu${cluster.cores.firstOrNull()?.id ?: 0}/cpufreq/scaling_available_governors"
+        read(path)?.split(" ")?.map { it.trim() }?.filter { it.isNotBlank() } ?: emptyList()
+    }
 
-    suspend fun readClusterAvailableFreqsKHz(cluster: CpuCluster): List<Long> =
-        withContext(Dispatchers.IO) {
-            val path = cluster.availableFreqsPath
-                ?: "/sys/devices/system/cpu/cpu${cluster.cores.firstOrNull()?.id ?: 0}/cpufreq/scaling_available_frequencies"
-            read(path)?.split(" ")?.mapNotNull { it.trim().toLongOrNull() }?.sorted() ?: emptyList()
-        }
+    suspend fun readClusterAvailableFreqsKHz(cluster: CpuCluster): List<Long> = withContext(Dispatchers.IO) {
+        val direct = cluster.availableFreqsPath
+            ?: "/sys/devices/system/cpu/cpu${cluster.cores.firstOrNull()?.id ?: 0}/cpufreq/scaling_available_frequencies"
+        val parsedDirect = read(direct)?.split(" ")?.mapNotNull { it.trim().toLongOrNull() }?.sorted()
+        if (!parsedDirect.isNullOrEmpty()) return@withContext parsedDirect
 
-    // ----------------------------
-    // Per-core online
-    // ----------------------------
+        val timeInState = listOf(
+            "${cluster.policyPath}/stats/time_in_state",
+            "/sys/devices/system/cpu/cpu${cluster.cores.firstOrNull()?.id ?: 0}/cpufreq/stats/time_in_state"
+        ).firstOrNull { RootManager.nodeExists(it) }
+
+        val fromTimeInState = timeInState?.let { path ->
+            RootManager.readNode(path)
+                ?.lineSequence()
+                ?.mapNotNull { it.substringBefore(' ').trim().toLongOrNull() }
+                ?.toList()
+                ?.sorted()
+        }.orEmpty()
+
+        if (fromTimeInState.isNotEmpty()) return@withContext fromTimeInState
+
+        val min = readClusterMinFreqKHz(cluster)
+        val max = readClusterMaxFreqKHz(cluster)
+        if (min > 0 && max >= min) listOf(min, max).distinct().sorted() else emptyList()
+    }
+
     suspend fun readCoreOnline(core: CpuCore): Boolean = withContext(Dispatchers.IO) {
         val p = core.onlinePath ?: return@withContext true
         val v = read(p) ?: "1"
@@ -270,48 +320,38 @@ object KernelControlEngine {
         writeRaw(p, if (enabled) "1" else "0", "core.online")
     }
 
-    // ----------------------------
-    // Per-cluster setters (freq safe)
-    // ----------------------------
-    suspend fun setClusterGovernor(cluster: CpuCluster, gov: String): WriteResult =
-        withContext(Dispatchers.IO) {
-            val p = cluster.govPath
-            if (p.isNullOrBlank()) return@withContext WriteResult(false, "cluster.gov", null, gov, null, null, null, "node_missing")
-            writeRaw(p, gov, "cluster.gov")
+    suspend fun setClusterGovernor(cluster: CpuCluster, gov: String): WriteResult = withContext(Dispatchers.IO) {
+        val p = cluster.govPath
+        if (p.isNullOrBlank()) return@withContext WriteResult(false, "cluster.gov", null, gov, null, null, null, "node_missing")
+        writeRaw(p, gov, "cluster.gov")
+    }
+
+    suspend fun setClusterFreqSafe(cluster: CpuCluster, newMinKHz: Long? = null, newMaxKHz: Long? = null): List<WriteResult> = withContext(Dispatchers.IO) {
+        val results = mutableListOf<WriteResult>()
+        val curMin = readClusterMinFreqKHz(cluster)
+        val curMax = readClusterMaxFreqKHz(cluster)
+        val targetMin = newMinKHz ?: curMin
+        val targetMax = newMaxKHz ?: curMax
+
+        if (targetMin > targetMax) {
+            results += setClusterMaxFreqKHz(cluster, targetMin.toString())
+            results += setClusterMinFreqKHz(cluster, targetMin.toString())
+            return@withContext results
         }
-
-    suspend fun setClusterFreqSafe(cluster: CpuCluster, newMinKHz: Long? = null, newMaxKHz: Long? = null): List<WriteResult> =
-        withContext(Dispatchers.IO) {
-            val results = mutableListOf<WriteResult>()
-            val curMin = readClusterMinFreqKHz(cluster)
-            val curMax = readClusterMaxFreqKHz(cluster)
-
-            val targetMin = newMinKHz ?: curMin
-            val targetMax = newMaxKHz ?: curMax
-
-            // Порядок запису щоб kernel не відхилив
-            if (targetMin > targetMax) {
-                results += setClusterMaxFreqKHz(cluster, targetMin.toString())
-                results += setClusterMinFreqKHz(cluster, targetMin.toString())
-                return@withContext results
-            }
-
-            if (newMaxKHz != null && newMaxKHz < curMin) {
-                results += setClusterMinFreqKHz(cluster, newMaxKHz.toString())
-                results += setClusterMaxFreqKHz(cluster, newMaxKHz.toString())
-                return@withContext results
-            }
-
-            if (newMinKHz != null && newMinKHz > curMax) {
-                results += setClusterMaxFreqKHz(cluster, newMinKHz.toString())
-                results += setClusterMinFreqKHz(cluster, newMinKHz.toString())
-                return@withContext results
-            }
-
-            if (newMinKHz != null) results += setClusterMinFreqKHz(cluster, newMinKHz.toString())
-            if (newMaxKHz != null) results += setClusterMaxFreqKHz(cluster, newMaxKHz.toString())
-            results
+        if (newMaxKHz != null && newMaxKHz < curMin) {
+            results += setClusterMinFreqKHz(cluster, newMaxKHz.toString())
+            results += setClusterMaxFreqKHz(cluster, newMaxKHz.toString())
+            return@withContext results
         }
+        if (newMinKHz != null && newMinKHz > curMax) {
+            results += setClusterMaxFreqKHz(cluster, newMinKHz.toString())
+            results += setClusterMinFreqKHz(cluster, newMinKHz.toString())
+            return@withContext results
+        }
+        if (newMinKHz != null) results += setClusterMinFreqKHz(cluster, newMinKHz.toString())
+        if (newMaxKHz != null) results += setClusterMaxFreqKHz(cluster, newMaxKHz.toString())
+        results
+    }
 
     private suspend fun setClusterMinFreqKHz(cluster: CpuCluster, v: String): WriteResult = withContext(Dispatchers.IO) {
         val p = cluster.minFreqPath
@@ -339,10 +379,7 @@ object KernelControlEngine {
     }
 
     suspend fun getSupportSnapshot(forceRefresh: Boolean = false): SupportSnapshot = withContext(Dispatchers.IO) {
-        if (forceRefresh) {
-            supportSnapshotCache = null
-        }
-
+        if (forceRefresh) supportSnapshotCache = null
         supportSnapshotCache?.let { return@withContext it }
 
         val snapshot = SupportSnapshot(
@@ -365,12 +402,6 @@ object KernelControlEngine {
         snapshot
     }
 
-    // ----------------------------
-    // Scheduler/EAS nodes with resolver
-    // ----------------------------
-
-    // У різних ядер можуть бути різні назви/місця.
-    // Ти можеш додавати сюди свої candidates без зміни UI.
     private val CAND_EAS = listOf(
         "/proc/sys/kernel/sched_energy_aware",
         "/proc/sys/kernel/sched_energy_aware_enabled"
@@ -382,11 +413,13 @@ object KernelControlEngine {
     )
 
     private val CAND_UPMIGRATE = listOf(
-        "/proc/sys/kernel/sched_upmigrate"
+        "/proc/sys/kernel/sched_upmigrate",
+        "/proc/sys/kernel/sched_upmigrate_pct"
     )
 
     private val CAND_DOWNMIGRATE = listOf(
-        "/proc/sys/kernel/sched_downmigrate"
+        "/proc/sys/kernel/sched_downmigrate",
+        "/proc/sys/kernel/sched_downmigrate_pct"
     )
 
     private val CAND_INIT_TASK_UTIL = listOf(
@@ -403,38 +436,46 @@ object KernelControlEngine {
 
     private val CAND_SCHEDUTIL_UPRATE = listOf(
         "/sys/devices/system/cpu/cpufreq/schedutil/up_rate_limit_us",
-        "/sys/devices/system/cpu/cpufreq/schedutil/rate_limit_us"
+        "/sys/devices/system/cpu/cpufreq/schedutil/rate_limit_us",
+        "/sys/devices/system/cpu/cpufreq/policy0/schedutil/up_rate_limit_us",
+        "/sys/devices/system/cpu/cpufreq/policy4/schedutil/up_rate_limit_us",
+        "/sys/devices/system/cpu/cpufreq/policy6/schedutil/up_rate_limit_us"
     )
 
     private val CAND_INTERACTIVE_HISPEED = listOf(
-        "/sys/devices/system/cpu/cpufreq/interactive/hispeed_freq"
+        "/sys/devices/system/cpu/cpufreq/interactive/hispeed_freq",
+        "/sys/devices/system/cpu/cpufreq/policy0/interactive/hispeed_freq",
+        "/sys/devices/system/cpu/cpufreq/policy4/interactive/hispeed_freq",
+        "/sys/devices/system/cpu/cpufreq/policy6/interactive/hispeed_freq",
+        "/sys/devices/system/cpu/cpu0/cpufreq/interactive/hispeed_freq"
     )
 
     private val CAND_TOUCHBOOST = listOf(
         "/sys/module/msm_performance/parameters/touchboost",
-        "/sys/module/performance/parameters/touchboost"
+        "/sys/module/performance/parameters/touchboost",
+        "/sys/module/cpu_boost/parameters/input_boost_enabled",
+        "/sys/module/cpu_input_boost/parameters/enabled"
     )
 
     private val CAND_MC_SAVE = listOf(
-        "/sys/devices/system/cpu/sched_mc_power_savings"
+        "/sys/devices/system/cpu/sched_mc_power_savings",
+        "/proc/sys/kernel/sched_mc_power_savings"
     )
 
     private val CAND_POWER_COLLAPSE = listOf(
         "/sys/module/pm_8x60/parameters/sleep_mode"
     )
 
-    // Thermal candidates вже були — зробимо теж resolver-логіку
     private val CAND_THERMAL = listOf(
         "/sys/module/msm_thermal/core_control/enabled",
         "/sys/module/msm_thermal/parameters/enabled",
         "/sys/module/thermal_core/parameters/enabled",
-        "/sys/module/cpu_boost/parameters/input_boost_enabled",
         "/sys/module/msm_thermal/parameters/core_control"
     )
 
     suspend fun readEasEnabled(): Boolean = withContext(Dispatchers.IO) {
         val p = resolveNode("eas.enabled", CAND_EAS, verifyWriteNoop = false) ?: return@withContext false
-        (read(p) == "1")
+        read(p) == "1"
     }
 
     suspend fun setEasEnabled(enabled: Boolean): WriteResult = withContext(Dispatchers.IO) {
@@ -564,11 +605,13 @@ object KernelControlEngine {
         writeRaw(p, if (enabled) "1" else "0", "power.collapse").also { Log.w(TAG, it.short()) }
     }
 
-    // Thermal: детект + resolver
     suspend fun detectThermal(): ThermalInfo = withContext(Dispatchers.IO) {
-        val temp = if (existsFile("/sys/class/thermal/thermal_zone0/temp")) "/sys/class/thermal/thermal_zone0/temp" else null
-        // Ми не фіксуємо throttlingPath тут жорстко — нехай resolver підбирає.
-        ThermalInfo(throttlingPath = null, tempPath = temp)
+        val tempCandidates = listOf(
+            "/sys/class/thermal/thermal_zone0/temp",
+            "/sys/devices/virtual/thermal/thermal_zone0/temp",
+            "/sys/class/thermal/thermal_zone1/temp"
+        )
+        ThermalInfo(throttlingPath = null, tempPath = tempCandidates.firstOrNull { RootManager.nodeExists(it) })
     }
 
     suspend fun readThermalEnabled(): Boolean = withContext(Dispatchers.IO) {

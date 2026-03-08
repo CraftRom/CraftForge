@@ -127,18 +127,28 @@ fun MainTweaksMenu(isRooted: Boolean, onNavigate: (TweaksRoute) -> Unit) {
 @Composable
 fun SettingsNavigationRow(title: String, subtitle: String, styles: InfoCardStyles, onClick: () -> Unit) {
     Row(
-        modifier = Modifier.fillMaxWidth().clickable { onClick() }.padding(16.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(styles.rowCornerRadius))
+            .background(styles.rowBackgroundColor)
+            .clickable { onClick() }
+            .padding(14.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Column(modifier = Modifier.weight(1f).padding(end = 16.dp)) {
             Text(text = title, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = styles.titleTextColor)
             Spacer(modifier = Modifier.height(4.dp))
-            Text(text = subtitle, fontSize = 12.sp, color = styles.titleTextColor.copy(alpha = 0.6f), lineHeight = 16.sp)
+            Text(text = subtitle, fontSize = 12.sp, color = styles.mutedTextColor, lineHeight = 16.sp)
         }
         Box(
-            modifier = Modifier.clip(RoundedCornerShape(8.dp)).background(styles.accentColor.copy(alpha = 0.1f)).padding(horizontal = 12.dp, vertical = 6.dp),
+            modifier = Modifier
+                .clip(RoundedCornerShape(10.dp))
+                .background(styles.chipBackgroundColor)
+                .padding(horizontal = 12.dp, vertical = 7.dp),
             contentAlignment = Alignment.Center
-        ) { Text(text = "OPEN", fontSize = 12.sp, color = styles.accentColor, fontWeight = FontWeight.Bold) }
+        ) {
+            Text(text = "OPEN", fontSize = 12.sp, color = styles.accentColor, fontWeight = FontWeight.Bold)
+        }
     }
 }
 
@@ -146,10 +156,20 @@ fun SettingsNavigationRow(title: String, subtitle: String, styles: InfoCardStyle
 fun ConfigScreenLayout(title: String, styles: InfoCardStyles, onBack: () -> Unit, content: @Composable ColumnScope.() -> Unit) {
     Scaffold(containerColor = MaterialTheme.colorScheme.surface) { _ ->
         Column(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
-            Row(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = onBack) { Icon(imageVector = Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = styles.titleTextColor) }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 14.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                IconButton(onClick = onBack) {
+                    Icon(imageVector = Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = styles.titleTextColor)
+                }
                 Spacer(modifier = Modifier.width(8.dp))
-                Text(text = title, style = MaterialTheme.typography.headlineMedium, color = styles.titleTextColor)
+                Column {
+                    Text(text = title, style = MaterialTheme.typography.headlineMedium, color = styles.titleTextColor)
+                    Text(text = "Сумісний профіль для різних ядер і прошивок", style = MaterialTheme.typography.bodySmall, color = styles.mutedTextColor)
+                }
             }
             content()
         }
@@ -157,23 +177,6 @@ fun ConfigScreenLayout(title: String, styles: InfoCardStyles, onBack: () -> Unit
 }
 
 // ================= ROOT МЕНЕДЖЕР ТА СЕРВІСИ =================
-object RootManager {
-    suspend fun readNodeViaRoot(command: String): String? = withContext(Dispatchers.IO) {
-        try {
-            val process = Runtime.getRuntime().exec(arrayOf("su", "-c", command))
-            val result = process.inputStream.bufferedReader().use { it.readText() }.trim()
-            process.waitFor()
-            result.ifEmpty { null }
-        } catch (e: Exception) { null }
-    }
-
-    suspend fun executeRootCommand(command: String): Boolean = withContext(Dispatchers.IO) {
-        try {
-            val process = Runtime.getRuntime().exec(arrayOf("su", "-c", command))
-            process.waitFor() == 0
-        } catch (e: Exception) { false }
-    }
-}
 
 private fun startTweakService(context: Context) {
     val intent = Intent(context, TweaksService::class.java)

@@ -10,7 +10,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import com.craftforge.app.ui.screens.RootManager.readNodeViaRoot
+import com.craftforge.app.util.RootManager
 import com.craftforge.app.ui.theme.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -81,9 +81,9 @@ fun IoConfigScreen(isRooted: Boolean, onBack: () -> Unit) {
             withContext(Dispatchers.IO) {
                 suspend fun probeNode(vararg paths: String): Pair<String, String>? {
                     for (path in paths) {
-                        val res = readNodeViaRoot("cat $path")
+                        val res = RootManager.readNodeViaRoot("cat $path")
                         if (res != null && res.isNotBlank() && !res.contains("No such file") && !res.contains("Not a directory")) {
-                            val canWrite = readNodeViaRoot("if [ -w \"$path\" ]; then echo '1'; else echo '0'; fi")?.trim() == "1"
+                            val canWrite = RootManager.readNodeViaRoot("if [ -w \"$path\" ]; then echo '1'; else echo '0'; fi")?.trim() == "1"
                             if (canWrite) {
                                 return Pair(path, res.trim())
                             }

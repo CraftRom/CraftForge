@@ -34,6 +34,8 @@ fun CpuConfigScreen(isRooted: Boolean, onBack: () -> Unit) {
     // ----------------------------
     var clusters by remember { mutableStateOf<List<KernelControlEngine.CpuCluster>>(emptyList()) }
     var thermal by remember { mutableStateOf<KernelControlEngine.ThermalInfo?>(null) }
+    var runtimeProfile by remember { mutableStateOf(KernelControlEngine.RuntimeProfile()) }
+    var isLoading by remember { mutableStateOf(true) }
 
     // ----------------------------
     // UI lists
@@ -117,132 +119,128 @@ fun CpuConfigScreen(isRooted: Boolean, onBack: () -> Unit) {
     // ----------------------------
     LaunchedEffect(isRooted) {
         if (!isRooted) {
+            isLoading = false
             toast("Root недоступний — режим LOCKED")
             return@LaunchedEffect
         }
 
-        withContext(Dispatchers.IO) {
-            // 1) Detect clusters + thermal
+        isLoading = true
+        val snapshot = withContext(Dispatchers.IO) {
+            data class ClusterSnapshot(
+                val id: Int,
+                val governor: String,
+                val minDisplay: String,
+                val maxDisplay: String,
+                val governorList: List<String>,
+                val freqList: List<String>,
+                val coreStates: List<Pair<Int, Boolean>>
+            )
+
+            data class ScreenSnapshot(
+                val runtimeProfile: KernelControlEngine.RuntimeProfile,
+                val clusters: List<KernelControlEngine.CpuCluster>,
+                val thermal: KernelControlEngine.ThermalInfo?,
+                val support: KernelControlEngine.SupportSnapshot,
+                val clusterSnapshots: List<ClusterSnapshot>,
+                val eas: Boolean,
+                val schedBoost: String,
+                val upMigrate: String,
+                val downMigrate: String,
+                val initTaskUtil: String,
+                val autoGroup: Boolean,
+                val capacityMargin: String,
+                val schedutilUpRate: String,
+                val interactiveHispeed: String,
+                val touchBoost: Boolean,
+                val multicoreSaving: Boolean,
+                val powerCollapse: Boolean,
+                val thermalEnabled: Boolean
+            )
+
             val detectedClusters = KernelControlEngine.detectCpuClusters()
-            clusters = detectedClusters
-            thermal = KernelControlEngine.detectThermal()
+            val detectedThermal = KernelControlEngine.detectThermal()
+            val detectedSupport = KernelControlEngine.getSupportSnapshot(forceRefresh = false)
+            val profile = KernelControlEngine.getRuntimeProfile(forceRefresh = false)
 
-            // 2) Fast support snapshot (single cached call)
-            support = KernelControlEngine.getSupportSnapshot(forceRefresh = false)
-
-            // 3) Per-cluster: read defaults + apply prefs overlay
-            //    Паралелимо читання, щоб UI швидше наповнився
-            coroutineScope {
+            val clusterSnapshots = coroutineScope {
                 detectedClusters.map { c ->
                     async {
                         val govNow = KernelControlEngine.readClusterGovernor(c)
                         val minNow = KernelControlEngine.readClusterMinFreqKHz(c)
                         val maxNow = KernelControlEngine.readClusterMaxFreqKHz(c)
-
                         val govList = KernelControlEngine.readClusterAvailableGovernors(c)
                         val freqsKHz = KernelControlEngine.readClusterAvailableFreqsKHz(c)
                         val freqsDisplay = freqsKHz.map { "${it / 1000} MHz" }
-
-                        clusterGovs[c.id] = govList
-                        clusterFreqs[c.id] = freqsDisplay
-
-                        clusterGov[c.id] = govNow
-                        clusterMin[c.id] = "${minNow / 1000} MHz"
-                        clusterMax[c.id] = "${maxNow / 1000} MHz"
-
-                        // prefs overlay
-                        val prefGov = prefs.getString("cluster_${c.id}_gov", null)
-                        val prefMin = prefs.getString("cluster_${c.id}_min_khz", null)?.toLongOrNull()
-                        val prefMax = prefs.getString("cluster_${c.id}_max_khz", null)?.toLongOrNull()
-
-                        if (!prefGov.isNullOrBlank()) {
-                            val r = KernelControlEngine.setClusterGovernor(c, prefGov)
-                            if (r.ok) clusterGov[c.id] = prefGov
-                        }
-
-                        if (prefMin != null || prefMax != null) {
-                            KernelControlEngine.setClusterFreqSafe(c, prefMin, prefMax)
-                            val newMin = KernelControlEngine.readClusterMinFreqKHz(c)
-                            val newMax = KernelControlEngine.readClusterMaxFreqKHz(c)
-                            clusterMin[c.id] = "${newMin / 1000} MHz"
-                            clusterMax[c.id] = "${newMax / 1000} MHz"
-                        }
-
-                        // per-core overlay
-                        c.cores.forEach { core ->
-                            val sys = KernelControlEngine.readCoreOnline(core)
-                            coreOnline[core.id] = sys
-
-                            val pref = prefs.getString("core_${core.id}_online", null)
-                            if (!pref.isNullOrBlank()) {
-                                val enabled = pref.trim() == "1"
-                                val r = KernelControlEngine.setCoreOnline(core, enabled)
-                                if (r.ok) coreOnline[core.id] = enabled
-                            }
-                        }
+                        val perCore = c.cores.map { core -> core.id to KernelControlEngine.readCoreOnline(core) }
+                        ClusterSnapshot(
+                            id = c.id,
+                            governor = govNow,
+                            minDisplay = "${minNow / 1000} MHz",
+                            maxDisplay = "${maxNow / 1000} MHz",
+                            governorList = govList,
+                            freqList = freqsDisplay,
+                            coreStates = perCore
+                        )
                     }
-                }.forEach { it.await() }
+                }.map { it.await() }
             }
 
-            // 4) Global defaults (тільки якщо supported)
-            if (support.eas) {
-                isEasEnabled = KernelControlEngine.readEasEnabled()
-            }
-            if (support.schedBoost) {
-                currentSchedBoost = KernelControlEngine.readSchedBoost().ifBlank { "0" }
-            }
-
-            if (support.migrate) {
-                currentUpMigrate = KernelControlEngine.readUpMigrate().ifBlank { "" }
-                currentDownMigrate = KernelControlEngine.readDownMigrate().ifBlank { "" }
-                currentMigrateDisplay =
-                    if (currentUpMigrate.isNotBlank() && currentDownMigrate.isNotBlank())
-                        displayFromRawMigrate(currentUpMigrate, currentDownMigrate)
-                    else "—"
-            }
-
-            if (support.initTaskUtil) {
-                currentInitTaskUtilRaw = KernelControlEngine.readInitTaskUtil().ifBlank { "" }
-                currentInitTaskUtilDisplay =
-                    if (currentInitTaskUtilRaw.isNotBlank()) displayFromRawInit(currentInitTaskUtilRaw) else "—"
-            }
-
-            if (support.autoGroup) {
-                isAutoGroupEnabled = KernelControlEngine.readAutoGroup()
-            }
-
-            if (support.capMarginUp) {
-                currentCapacityMarginRaw = KernelControlEngine.readCapacityMarginUp().ifBlank { "" }
-            }
-
-            if (support.schedutilUpRate) {
-                schedutilUpRate = KernelControlEngine.readSchedutilUpRateUs().ifBlank { "" }
-            }
-
-            if (support.interactiveHispeed) {
-                interactiveHispeedFreqKHz = KernelControlEngine.readInteractiveHispeedFreqKHz().ifBlank { "" }
-            }
-
-            if (support.touchBoost) {
-                isTouchBoostEnabled = KernelControlEngine.readTouchBoost()
-            }
-
-            if (support.mcSaving) {
-                isMulticoreSavingEnabled = KernelControlEngine.readMulticorePowerSaving()
-            }
-
-            if (support.powerCollapse) {
-                isPowerCollapseEnabled = KernelControlEngine.readPowerCollapse()
-            }
-
-            if (support.thermal) {
-                isThermalEnabled = KernelControlEngine.readThermalEnabled()
-            }
-
-            Log.i("CpuConfigScreen", "Support snapshot: $support")
+            ScreenSnapshot(
+                runtimeProfile = profile,
+                clusters = detectedClusters,
+                thermal = detectedThermal,
+                support = detectedSupport,
+                clusterSnapshots = clusterSnapshots,
+                eas = if (detectedSupport.eas) KernelControlEngine.readEasEnabled() else false,
+                schedBoost = if (detectedSupport.schedBoost) KernelControlEngine.readSchedBoost().ifBlank { "0" } else "0",
+                upMigrate = if (detectedSupport.migrate) KernelControlEngine.readUpMigrate().ifBlank { "" } else "",
+                downMigrate = if (detectedSupport.migrate) KernelControlEngine.readDownMigrate().ifBlank { "" } else "",
+                initTaskUtil = if (detectedSupport.initTaskUtil) KernelControlEngine.readInitTaskUtil().ifBlank { "" } else "",
+                autoGroup = if (detectedSupport.autoGroup) KernelControlEngine.readAutoGroup() else false,
+                capacityMargin = if (detectedSupport.capMarginUp) KernelControlEngine.readCapacityMarginUp().ifBlank { "" } else "",
+                schedutilUpRate = if (detectedSupport.schedutilUpRate) KernelControlEngine.readSchedutilUpRateUs().ifBlank { "" } else "",
+                interactiveHispeed = if (detectedSupport.interactiveHispeed) KernelControlEngine.readInteractiveHispeedFreqKHz().ifBlank { "" } else "",
+                touchBoost = if (detectedSupport.touchBoost) KernelControlEngine.readTouchBoost() else false,
+                multicoreSaving = if (detectedSupport.mcSaving) KernelControlEngine.readMulticorePowerSaving() else false,
+                powerCollapse = if (detectedSupport.powerCollapse) KernelControlEngine.readPowerCollapse() else false,
+                thermalEnabled = if (detectedSupport.thermal) KernelControlEngine.readThermalEnabled() else true
+            )
         }
-    }
 
+        runtimeProfile = snapshot.runtimeProfile
+        clusters = snapshot.clusters
+        thermal = snapshot.thermal
+        support = snapshot.support
+
+        clusterGov.clear(); clusterMin.clear(); clusterMax.clear(); clusterGovs.clear(); clusterFreqs.clear(); coreOnline.clear()
+        snapshot.clusterSnapshots.forEach { clusterState ->
+            clusterGov[clusterState.id] = clusterState.governor
+            clusterMin[clusterState.id] = clusterState.minDisplay
+            clusterMax[clusterState.id] = clusterState.maxDisplay
+            clusterGovs[clusterState.id] = clusterState.governorList
+            clusterFreqs[clusterState.id] = clusterState.freqList
+            clusterState.coreStates.forEach { (coreId, online) -> coreOnline[coreId] = online }
+        }
+
+        isEasEnabled = snapshot.eas
+        currentSchedBoost = snapshot.schedBoost
+        currentUpMigrate = snapshot.upMigrate
+        currentDownMigrate = snapshot.downMigrate
+        currentMigrateDisplay = if (snapshot.upMigrate.isNotBlank() && snapshot.downMigrate.isNotBlank()) displayFromRawMigrate(snapshot.upMigrate, snapshot.downMigrate) else "—"
+        currentInitTaskUtilRaw = snapshot.initTaskUtil
+        currentInitTaskUtilDisplay = if (snapshot.initTaskUtil.isNotBlank()) displayFromRawInit(snapshot.initTaskUtil) else "—"
+        isAutoGroupEnabled = snapshot.autoGroup
+        currentCapacityMarginRaw = snapshot.capacityMargin
+        schedutilUpRate = snapshot.schedutilUpRate
+        interactiveHispeedFreqKHz = snapshot.interactiveHispeed
+        isTouchBoostEnabled = snapshot.touchBoost
+        isMulticoreSavingEnabled = snapshot.multicoreSaving
+        isPowerCollapseEnabled = snapshot.powerCollapse
+        isThermalEnabled = snapshot.thermalEnabled
+        isLoading = false
+
+        Log.i("CpuConfigScreen", "Support snapshot: $support | runtime=$runtimeProfile")
+    }
     // ----------------------------
     // UI
     // ----------------------------
@@ -258,8 +256,34 @@ fun CpuConfigScreen(isRooted: Boolean, onBack: () -> Unit) {
                 return@Column
             }
 
+            if (isLoading) {
+                StyledBlockCard(styles = styles, title = "Scanning kernel") {
+                    SettingsBadgeRow(
+                        title = "Підготовка профілю",
+                        subtitle = "Сканую доступні ноди, кластери та сумісні тюнінги для поточної прошивки.",
+                        value = "SCANNING",
+                        isRooted = true,
+                        styles = styles
+                    )
+                }
+            }
+
+            InfoCardUniversal(
+                title = "Kernel runtime profile",
+                info = listOf(
+                    "ROM" to runtimeProfile.romFamily,
+                    "Vendor" to runtimeProfile.vendorFamily,
+                    "SoC" to runtimeProfile.socFamily,
+                    "Kernel" to runtimeProfile.kernelFlavor,
+                    "Features" to "${listOf(support.eas, support.schedBoost, support.migrate, support.initTaskUtil, support.autoGroup, support.capMarginUp, support.schedutilUpRate, support.interactiveHispeed, support.touchBoost, support.mcSaving, support.powerCollapse, support.thermal).count { it }} / 12",
+                    "Clusters" to clusters.size.toString()
+                ),
+                styles = styles
+            )
+
             // =================================================
             // SECTION 1: Per-cluster + per-core
+            // =================================================
             // =================================================
             clusters.forEach { cluster ->
                 val cid = cluster.id

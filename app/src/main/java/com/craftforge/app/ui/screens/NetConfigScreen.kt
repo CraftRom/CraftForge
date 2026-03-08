@@ -15,6 +15,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.craftforge.app.ui.theme.*
+import com.craftforge.app.util.RootManager
 import kotlinx.coroutines.launch
 
 @Composable

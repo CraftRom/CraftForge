@@ -3,6 +3,7 @@ package com.craftforge.app.util
 import android.util.Log
 import java.io.BufferedReader
 import java.io.InputStreamReader
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 
 object RootManager {
@@ -21,8 +22,9 @@ object RootManager {
     @Volatile
     private var cachedSu: String? = null
 
-    // Кандидати: PATH + найпопулярніші місця.
-    // (KernelSU/APatch можуть не мати /system/bin/su — тому тут і PATH, і абсолютні шляхи)
+    private val existsCache = ConcurrentHashMap<String, Boolean>()
+    private val writableCache = ConcurrentHashMap<String, Boolean>()
+
     private val suCandidates = listOf(
         "su",
         "/system/bin/su",
@@ -35,7 +37,6 @@ object RootManager {
         "/data/adb/apatch/bin/su"
     )
 
-    /** Нормальне quoting для sh -c */
     private fun shQuote(s: String): String = "'" + s.replace("'", "'\\''") + "'"
 
     private fun runProcess(cmd: List<String>, timeoutSec: Long = 12): CmdResult {
@@ -57,24 +58,22 @@ object RootManager {
         }
     }
 
-    /** Перевіряє, чи даний su реально працює для root-команд */
     private fun testSu(suPath: String): Boolean {
-        // "id -u" має повернути 0
         val r = runProcess(listOf(suPath, "-c", "id -u"))
         val ok = r.ok && r.out.trim() == "0"
         Log.d(TAG, "testSu: $suPath -> ok=$ok code=${r.code} out='${r.out}' err='${r.err}'")
         return ok
     }
 
-    /** Підбирає робочий su (PATH або абсолютний), кешує */
+    @Synchronized
     fun resolveSu(): String? {
         cachedSu?.let { return it }
 
-        for (c in suCandidates) {
-            if (testSu(c)) {
-                cachedSu = c
-                Log.i(TAG, "resolveSu: using $c")
-                return c
+        for (candidate in suCandidates) {
+            if (testSu(candidate)) {
+                cachedSu = candidate
+                Log.i(TAG, "resolveSu: using $candidate")
+                return candidate
             }
         }
 
@@ -82,17 +81,11 @@ object RootManager {
         return null
     }
 
-    /** Виконує root команду, повертає повний результат */
     fun execRoot(cmd: String, timeoutSec: Long = 12): CmdResult {
         val su = resolveSu()
-        if (su == null) {
-            return CmdResult(-1, "", "no_su", used = null)
-        }
+            ?: return CmdResult(-1, "", "no_su", used = null)
 
-        // Через sh -c, глушимо stderr в самому cmd де треба — але тут НЕ глушимо, бо нам треба діагностика
-        val full = listOf(su, "-c", "sh -c ${shQuote(cmd)}")
-        val r = runProcess(full, timeoutSec)
-
+        val r = runProcess(listOf(su, "-c", cmd), timeoutSec)
         if (!r.ok) {
             Log.w(TAG, "execRoot FAIL code=${r.code} used=${r.used} cmd=$cmd err=${r.err}")
         } else {
@@ -101,17 +94,84 @@ object RootManager {
         return r
     }
 
-    /** Старі сумісні методи (щоб твій код не розвалився) */
-    fun executeRootCommand(cmd: String) {
-        execRoot(cmd)
+    fun clearNodeCaches() {
+        existsCache.clear()
+        writableCache.clear()
     }
 
+    fun invalidateNodeCache(path: String?) {
+        if (path.isNullOrBlank()) return
+        existsCache.remove(path)
+        writableCache.remove(path)
+    }
+
+    fun nodeExists(path: String, forceRefresh: Boolean = false): Boolean {
+        if (!forceRefresh) {
+            existsCache[path]?.let { return it }
+        }
+        val ok = execRoot("[ -e ${shQuote(path)} ] && echo 1 || echo 0").out == "1"
+        existsCache[path] = ok
+        return ok
+    }
+
+    fun nodeWritable(path: String, forceRefresh: Boolean = false): Boolean {
+        if (!forceRefresh) {
+            writableCache[path]?.let { return it }
+        }
+        val ok = execRoot("[ -w ${shQuote(path)} ] && echo 1 || echo 0").out == "1"
+        existsCache[path] = existsCache[path] ?: ok
+        writableCache[path] = ok
+        return ok
+    }
+
+    fun readNode(path: String, forceRefresh: Boolean = false): String? {
+        if (!nodeExists(path, forceRefresh)) return null
+        val r = execRoot("cat ${shQuote(path)}")
+        return if (r.ok) r.out.trim().ifEmpty { null } else null
+    }
+
+    fun writeNode(path: String, value: String, verify: Boolean = true, timeoutSec: Long = 12): CmdResult {
+        if (!nodeExists(path)) {
+            return CmdResult(-1, "", "node_missing", used = path)
+        }
+        val trimmed = value.trim()
+        val before = readNode(path)
+        if (before?.trim() == trimmed) {
+            return CmdResult(0, trimmed, "noop_same_value", used = path)
+        }
+
+        val primary = execRoot("printf %s ${shQuote(trimmed)} > ${shQuote(path)}", timeoutSec)
+        if (!verify) {
+            invalidateNodeCache(path)
+            return primary
+        }
+
+        val afterPrimary = readNode(path, forceRefresh = true)?.trim()
+        if (primary.ok && afterPrimary == trimmed) {
+            return CmdResult(0, afterPrimary ?: trimmed, primary.err, used = path)
+        }
+
+        val fallback = execRoot("printf %s ${shQuote(trimmed)} | tee ${shQuote(path)} >/dev/null", timeoutSec)
+        val afterFallback = readNode(path, forceRefresh = true)?.trim()
+        return when {
+            fallback.ok && afterFallback == trimmed -> CmdResult(0, afterFallback ?: trimmed, fallback.err, used = path)
+            else -> CmdResult(
+                code = if (fallback.code != 0) fallback.code else primary.code,
+                out = afterFallback ?: afterPrimary ?: "",
+                err = listOf(primary.err, fallback.err).filter { it.isNotBlank() }.joinToString(" | ").ifBlank { "readback_mismatch" },
+                used = path
+            )
+        }
+    }
+
+    fun executeRootCommand(cmd: String): CmdResult = execRoot(cmd)
+
     fun readNodeViaRoot(cmdOrPath: String): String? {
-        // Дозволимо передавати або "cat /path", або просто "/path"
-        val cmd = if (cmdOrPath.trim().startsWith("cat ") || cmdOrPath.contains(" ")) {
-            cmdOrPath
+        val trimmed = cmdOrPath.trim()
+        val cmd = if (trimmed.startsWith("cat ") || trimmed.contains(" ")) {
+            trimmed
         } else {
-            "cat ${shQuote(cmdOrPath)}"
+            "cat ${shQuote(trimmed)}"
         }
         val r = execRoot(cmd)
         return if (r.ok) r.out else null

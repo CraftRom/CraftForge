@@ -11,7 +11,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.craftforge.app.ui.screens.RootManager.readNodeViaRoot
+import com.craftforge.app.util.RootManager
 import com.craftforge.app.ui.theme.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -57,7 +57,7 @@ fun GpuConfigScreen(isRooted: Boolean, onBack: () -> Unit) {
             withContext(Dispatchers.IO) {
                 // Безпечна функція для читання вузлів
                 suspend fun safeRead(path: String): String? {
-                    val res = readNodeViaRoot("cat $path")
+                    val res = RootManager.readNodeViaRoot("cat $path")
                     if (res == null || res.isBlank() || res.contains("No such file") || res.contains("Not a directory")) {
                         return null
                     }
