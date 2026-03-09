@@ -2,16 +2,35 @@ package com.craftforge.app.ui.screens
 
 import android.content.Context
 import android.widget.Toast
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.HorizontalDivider
-import androidx.compose.runtime.*
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import com.craftforge.app.R
+import com.craftforge.app.ui.theme.SettingsBadgeRow
+import com.craftforge.app.ui.theme.SettingsDropdownRow
+import com.craftforge.app.ui.theme.SettingsSwitchRow
+import com.craftforge.app.ui.theme.StyledBlockCard
+import com.craftforge.app.ui.theme.infoCardStyles
+import com.craftforge.app.util.KernelOperationNotifier
 import com.craftforge.app.util.RootManager
-import com.craftforge.app.ui.theme.*
+import com.craftforge.app.util.ZramApplyStage
+import com.craftforge.app.util.ZramManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -24,109 +43,163 @@ fun IoConfigScreen(isRooted: Boolean, onBack: () -> Unit) {
     val scope = rememberCoroutineScope()
     val scrollState = rememberScrollState()
 
-    // --- БЛОКОВІ ПРИСТРОЇ (STORAGE) ---
-    var blockDevice by remember { mutableStateOf("Unknown") }
+    val loadingText = stringResource(R.string.common_loading)
+    val lockedText = stringResource(R.string.common_locked)
+    val unknownText = stringResource(R.string.common_unknown)
+    val virtualUnknownText = stringResource(R.string.common_virtual_unknown)
+
+    val readAheadLevels = listOf(
+        stringResource(R.string.io_readahead_128),
+        stringResource(R.string.io_readahead_256),
+        stringResource(R.string.io_readahead_512),
+        stringResource(R.string.io_readahead_1024),
+        stringResource(R.string.io_readahead_2048)
+    )
+    val nrRequestsLevels = listOf(
+        stringResource(R.string.io_nr_requests_64),
+        stringResource(R.string.io_nr_requests_128),
+        stringResource(R.string.io_nr_requests_256),
+        stringResource(R.string.io_nr_requests_512)
+    )
+    val swappinessLevels = listOf(
+        stringResource(R.string.io_swappiness_0),
+        stringResource(R.string.io_swappiness_30),
+        stringResource(R.string.io_swappiness_60),
+        stringResource(R.string.io_swappiness_100),
+        stringResource(R.string.io_swappiness_150)
+    )
+    val pageClusterLevels = listOf(
+        stringResource(R.string.io_page_cluster_0),
+        stringResource(R.string.io_page_cluster_1),
+        stringResource(R.string.io_page_cluster_2),
+        stringResource(R.string.io_page_cluster_3)
+    )
+    val vfsLevels = listOf(
+        stringResource(R.string.io_vfs_10),
+        stringResource(R.string.io_vfs_50),
+        stringResource(R.string.io_vfs_100),
+        stringResource(R.string.io_vfs_150)
+    )
+    val watermarkLevels = listOf(
+        stringResource(R.string.io_watermark_10),
+        stringResource(R.string.io_watermark_50),
+        stringResource(R.string.io_watermark_100),
+        stringResource(R.string.io_watermark_200)
+    )
+    val dirtyRatioLevels = listOf(
+        stringResource(R.string.io_dirty_ratio_5),
+        stringResource(R.string.io_dirty_ratio_10),
+        stringResource(R.string.io_dirty_ratio_20),
+        stringResource(R.string.io_dirty_ratio_30)
+    )
+    val dirtyBgRatioLevels = listOf(
+        stringResource(R.string.io_dirty_bg_ratio_2),
+        stringResource(R.string.io_dirty_bg_ratio_5),
+        stringResource(R.string.io_dirty_bg_ratio_10),
+        stringResource(R.string.io_dirty_bg_ratio_15)
+    )
+
+    var blockDevice by remember { mutableStateOf(virtualUnknownText) }
     var blockPath by remember { mutableStateOf<String?>(null) }
-
-    var currentIo by remember { mutableStateOf("Loading...") }
-    var availableIos by remember { mutableStateOf(listOf<String>()) }
-
-    var currentReadAhead by remember { mutableStateOf("Loading...") }
+    var schedulerPath by remember { mutableStateOf<String?>(null) }
+    var currentIo by remember { mutableStateOf(loadingText) }
+    var availableIos by remember { mutableStateOf(emptyList<String>()) }
+    var currentReadAhead by remember { mutableStateOf(loadingText) }
     var readAheadPath by remember { mutableStateOf<String?>(null) }
-    val readAheadLevels = listOf("128 KB", "256 KB", "512 KB", "1024 KB", "2048 KB")
-
     var ioStatsPath by remember { mutableStateOf<String?>(null) }
     var isIoStatsEnabled by remember { mutableStateOf(false) }
-
     var addRandomPath by remember { mutableStateOf<String?>(null) }
     var isAddRandomEnabled by remember { mutableStateOf(false) }
-
     var nrRequestsPath by remember { mutableStateOf<String?>(null) }
-    var currentNrRequests by remember { mutableStateOf("") }
-    val nrRequestsLevels = listOf("64", "128 (Default)", "256 (Performance)", "512 (Max I/O)")
+    var currentNrRequests by remember { mutableStateOf(loadingText) }
 
-    // --- ВІРТУАЛЬНА ПАМ'ЯТЬ (VM / ZRAM) ---
     var zramCompPath by remember { mutableStateOf<String?>(null) }
-    var currentZramComp by remember { mutableStateOf("") }
-    var availableZramComps by remember { mutableStateOf(listOf<String>()) }
+    var currentZramComp by remember { mutableStateOf(loadingText) }
+    var availableZramComps by remember { mutableStateOf(emptyList<String>()) }
+    var isApplyingZram by remember { mutableStateOf(false) }
+    var zramProgress by remember { mutableStateOf<Float?>(null) }
+    var zramProgressLabel by remember { mutableStateOf<String?>(null) }
 
     var swappinessPath by remember { mutableStateOf<String?>(null) }
-    var currentSwappiness by remember { mutableStateOf("Loading...") }
-    val swappinessLevels = listOf("0 (Disabled)", "30 (Light)", "60 (Balanced)", "100 (Aggressive)", "150 (ZRAM Max)")
-
+    var currentSwappiness by remember { mutableStateOf(loadingText) }
     var pageClusterPath by remember { mutableStateOf<String?>(null) }
-    var currentPageCluster by remember { mutableStateOf("") }
-    val pageClusterLevels = listOf("0 (Optimal for ZRAM)", "1", "2", "3 (Default for HDD)")
-
+    var currentPageCluster by remember { mutableStateOf(loadingText) }
     var vfsPath by remember { mutableStateOf<String?>(null) }
-    var currentVfs by remember { mutableStateOf("Loading...") }
-    val vfsLevels = listOf("10 (Keep Cache Long)", "50", "100 (Default)", "150 (Drop Fast)")
+    var currentVfs by remember { mutableStateOf(loadingText) }
 
-    // --- ADVANCED VM (Ядра 4.9 - 6.1+) ---
     var mglruPath by remember { mutableStateOf<String?>(null) }
     var isMglruEnabled by remember { mutableStateOf(false) }
-
     var watermarkPath by remember { mutableStateOf<String?>(null) }
-    var currentWatermark by remember { mutableStateOf("") }
-    val watermarkLevels = listOf("10 (Default)", "50 (Aggressive Kswapd)", "100", "200 (Gaming Mode)")
-
-    // --- КЕШУВАННЯ ДАНИХ (DIRTY CACHE) ---
+    var currentWatermark by remember { mutableStateOf(loadingText) }
     var dirtyRatioPath by remember { mutableStateOf<String?>(null) }
-    var currentDirtyRatio by remember { mutableStateOf("") }
-    val dirtyRatioLevels = listOf("5 (Max I/O Smoothness)", "10", "20 (Default)", "30 (Max App Cache)")
-
+    var currentDirtyRatio by remember { mutableStateOf(loadingText) }
     var dirtyBgRatioPath by remember { mutableStateOf<String?>(null) }
-    var currentDirtyBgRatio by remember { mutableStateOf("") }
-    val dirtyBgRatioLevels = listOf("2", "5", "10 (Default)", "15")
+    var currentDirtyBgRatio by remember { mutableStateOf(loadingText) }
+
+    fun parseSchedulerValue(raw: String): String {
+        return raw.substringAfter("[", raw).substringBefore("]").trim()
+    }
+
+    fun displayForRaw(raw: String?, options: List<String>): String {
+        val clean = raw?.trim().orEmpty()
+        if (clean.isBlank()) return unknownText
+        return options.firstOrNull { it.startsWith(clean) }
+            ?: context.getString(R.string.common_custom_format, clean)
+    }
+
+    fun zramStageText(stage: ZramApplyStage): String = when (stage) {
+        ZramApplyStage.PREPARING -> context.getString(R.string.zram_progress_preparing)
+        ZramApplyStage.SWAPOFF -> context.getString(R.string.zram_progress_swapoff)
+        ZramApplyStage.RESETTING -> context.getString(R.string.zram_progress_reset)
+        ZramApplyStage.SETTING_ALGO -> context.getString(R.string.zram_progress_set_algo)
+        ZramApplyStage.RESTORING_SIZE -> context.getString(R.string.zram_progress_restore_size)
+        ZramApplyStage.REENABLING_SWAP -> context.getString(R.string.zram_progress_reenable_swap)
+        ZramApplyStage.VERIFYING -> context.getString(R.string.zram_progress_verify)
+        ZramApplyStage.DONE -> context.getString(R.string.zram_progress_done)
+    }
 
     LaunchedEffect(isRooted) {
         if (isRooted) {
             withContext(Dispatchers.IO) {
-                suspend fun probeNode(vararg paths: String): Pair<String, String>? {
+                fun probeNode(vararg paths: String): Pair<String, String>? {
                     for (path in paths) {
-                        val res = RootManager.readNodeViaRoot("cat $path")
-                        if (res != null && res.isNotBlank() && !res.contains("No such file") && !res.contains("Not a directory")) {
-                            val canWrite = RootManager.readNodeViaRoot("if [ -w \"$path\" ]; then echo '1'; else echo '0'; fi")?.trim() == "1"
-                            if (canWrite) {
-                                return Pair(path, res.trim())
-                            }
+                        val value = RootManager.readNode(path)?.trim().orEmpty()
+                        if (value.isNotBlank() && RootManager.nodeWritable(path)) {
+                            return path to value
                         }
                     }
                     return null
                 }
 
-                // 1. ВИЗНАЧЕННЯ НАКОПИЧУВАЧА
                 val sdaProbe = probeNode("/sys/block/sda/queue/scheduler")
                 val mmcProbe = probeNode("/sys/block/mmcblk0/queue/scheduler")
-
                 when {
                     sdaProbe != null -> {
-                        blockDevice = "UFS (sda)"
+                        blockDevice = context.getString(R.string.io_device_ufs)
                         blockPath = "/sys/block/sda/queue"
-
-                        val ioRaw = sdaProbe.second
-                        currentIo = ioRaw.substringAfter("[").substringBefore("]")
-                        availableIos = ioRaw.replace("[", "").replace("]", "").split(" ").filter { it.isNotBlank() }
+                        schedulerPath = sdaProbe.first
+                        currentIo = parseSchedulerValue(sdaProbe.second)
+                        availableIos = sdaProbe.second.replace("[", "").replace("]", "").split(" ").filter { it.isNotBlank() }
                     }
                     mmcProbe != null -> {
-                        blockDevice = "eMMC (mmcblk0)"
+                        blockDevice = context.getString(R.string.io_device_emmc)
                         blockPath = "/sys/block/mmcblk0/queue"
-
-                        val ioRaw = mmcProbe.second
-                        currentIo = ioRaw.substringAfter("[").substringBefore("]")
-                        availableIos = ioRaw.replace("[", "").replace("]", "").split(" ").filter { it.isNotBlank() }
+                        schedulerPath = mmcProbe.first
+                        currentIo = parseSchedulerValue(mmcProbe.second)
+                        availableIos = mmcProbe.second.replace("[", "").replace("]", "").split(" ").filter { it.isNotBlank() }
                     }
                     else -> {
-                        blockDevice = "Virtual/Unknown"
+                        blockDevice = virtualUnknownText
                         blockPath = null
+                        schedulerPath = null
+                        currentIo = unknownText
                     }
                 }
 
-                // 2. ДОДАТКОВІ ПАРАМЕТРИ НАКОПИЧУВАЧА
                 if (blockPath != null) {
                     val readAheadProbe = probeNode("$blockPath/read_ahead_kb")
                     readAheadPath = readAheadProbe?.first
-                    currentReadAhead = readAheadProbe?.second?.let { "$it KB" } ?: "Unknown"
+                    currentReadAhead = readAheadProbe?.second?.let { context.getString(R.string.io_kb_format, it) } ?: unknownText
 
                     val ioStatsProbe = probeNode("$blockPath/iostats")
                     ioStatsPath = ioStatsProbe?.first
@@ -138,370 +211,376 @@ fun IoConfigScreen(isRooted: Boolean, onBack: () -> Unit) {
 
                     val nrReqProbe = probeNode("$blockPath/nr_requests")
                     nrRequestsPath = nrReqProbe?.first
-                    currentNrRequests = nrReqProbe?.second ?: ""
+                    currentNrRequests = displayForRaw(nrReqProbe?.second, nrRequestsLevels)
                 }
 
-                // 3. ZRAM ТА ВІРТУАЛЬНА ПАМ'ЯТЬ (VM)
                 val zramCompProbe = probeNode("/sys/block/zram0/comp_algorithm")
                 zramCompPath = zramCompProbe?.first
                 if (zramCompProbe != null) {
                     val raw = zramCompProbe.second
-                    currentZramComp = raw.substringAfter("[").substringBefore("]")
+                    currentZramComp = ZramManager.parseCurrentAlgorithm(raw)
                     availableZramComps = raw.replace("[", "").replace("]", "").split(" ").filter { it.isNotBlank() }
                 }
 
                 val swappinessProbe = probeNode("/proc/sys/vm/swappiness")
                 swappinessPath = swappinessProbe?.first
-                val swapRaw = swappinessProbe?.second
-                currentSwappiness = when (swapRaw) {
-                    "0" -> "0 (Disabled)"
-                    "30" -> "30 (Light)"
-                    "60" -> "60 (Balanced)"
-                    "100" -> "100 (Aggressive)"
-                    "150" -> "150 (ZRAM Max)"
-                    null -> "Unknown"
-                    else -> "$swapRaw (Custom)"
-                }
+                currentSwappiness = displayForRaw(swappinessProbe?.second, swappinessLevels)
 
                 val pcProbe = probeNode("/proc/sys/vm/page-cluster")
                 pageClusterPath = pcProbe?.first
-                currentPageCluster = pcProbe?.second ?: ""
+                currentPageCluster = displayForRaw(pcProbe?.second, pageClusterLevels)
 
                 val vfsProbe = probeNode("/proc/sys/vm/vfs_cache_pressure")
                 vfsPath = vfsProbe?.first
-                val vfsRaw = vfsProbe?.second
-                currentVfs = when (vfsRaw) {
-                    "10" -> "10 (Keep Cache Long)"
-                    "50" -> "50"
-                    "100" -> "100 (Default)"
-                    "150" -> "150 (Drop Fast)"
-                    null -> "Unknown"
-                    else -> "$vfsRaw (Custom)"
-                }
+                currentVfs = displayForRaw(vfsProbe?.second, vfsLevels)
 
-                // 4. ADVANCED VM (MGLRU / Watermarks)
                 val mglruProbe = probeNode("/sys/kernel/mm/lru_gen/enabled")
                 mglruPath = mglruProbe?.first
-                // MGLRU може бути 'y', 'n', '0x0000', '0x0003' тощо
                 isMglruEnabled = mglruProbe?.second?.let { it.contains("y") || it.contains("0x0001") || it.contains("0x0003") || it.contains("0x0007") } == true
 
                 val wmProbe = probeNode("/proc/sys/vm/watermark_scale_factor")
                 watermarkPath = wmProbe?.first
-                currentWatermark = wmProbe?.second ?: ""
+                currentWatermark = displayForRaw(wmProbe?.second, watermarkLevels)
 
-                // 5. DIRTY CACHE
                 val drProbe = probeNode("/proc/sys/vm/dirty_ratio")
                 dirtyRatioPath = drProbe?.first
-                currentDirtyRatio = drProbe?.second ?: ""
+                currentDirtyRatio = displayForRaw(drProbe?.second, dirtyRatioLevels)
 
                 val dbgProbe = probeNode("/proc/sys/vm/dirty_background_ratio")
                 dirtyBgRatioPath = dbgProbe?.first
-                currentDirtyBgRatio = dbgProbe?.second ?: ""
+                currentDirtyBgRatio = displayForRaw(dbgProbe?.second, dirtyBgRatioLevels)
             }
         } else {
-            currentIo = "LOCKED"
-            currentReadAhead = "LOCKED"
-            currentSwappiness = "LOCKED"
-            currentVfs = "LOCKED"
+            currentIo = lockedText
+            currentReadAhead = lockedText
+            currentNrRequests = lockedText
+            currentZramComp = lockedText
+            currentSwappiness = lockedText
+            currentPageCluster = lockedText
+            currentVfs = lockedText
+            currentWatermark = lockedText
+            currentDirtyRatio = lockedText
+            currentDirtyBgRatio = lockedText
         }
     }
 
-    ConfigScreenLayout(title = "Storage & Memory", styles = styles, onBack = onBack) {
+    fun writeSimpleValue(path: String?, value: String, afterWrite: () -> Unit) {
+        if (path.isNullOrBlank()) return
+        scope.launch(Dispatchers.IO) {
+            val result = RootManager.writeNode(path, value, verify = true)
+            if (result.ok) afterWrite()
+        }
+    }
+
+    ConfigScreenLayout(title = stringResource(R.string.io_screen_title), styles = styles, onBack = onBack) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .verticalScroll(scrollState)
-                .padding(bottom = 32.dp)
+                .padding(bottom = 16.dp)
         ) {
-            // --- БЛОК 1: ФІЗИЧНА ПАМ'ЯТЬ (STORAGE) ---
-            val showStorageSection = (blockPath != null && (availableIos.isNotEmpty() || readAheadPath != null || nrRequestsPath != null || addRandomPath != null || ioStatsPath != null)) || !isRooted
+            val showStorageSection = schedulerPath != null || readAheadPath != null || nrRequestsPath != null || addRandomPath != null || ioStatsPath != null || !isRooted
             if (showStorageSection) {
-                StyledBlockCard(styles = styles, title = "Storage Tuning ($blockDevice)") {
-                    var needsDivider = false
+                StyledBlockCard(styles = styles, title = stringResource(R.string.io_section_storage)) {
+                    SettingsBadgeRow(
+                        title = stringResource(R.string.io_device_type),
+                        subtitle = stringResource(R.string.io_device_type_subtitle),
+                        value = blockDevice,
+                        isRooted = isRooted,
+                        styles = styles
+                    )
 
-                    if (availableIos.isNotEmpty()) {
+                    if (schedulerPath != null || !isRooted) {
+                        HorizontalDivider(color = styles.titleTextColor.copy(alpha = 0.05f), modifier = Modifier.padding(horizontal = 16.dp))
                         SettingsDropdownRow(
-                            title = "I/O Scheduler",
-                            subtitle = "Manages storage read/write requests.",
+                            title = stringResource(R.string.io_scheduler_title),
+                            subtitle = stringResource(R.string.io_scheduler_subtitle),
                             currentValue = currentIo,
                             availableValues = availableIos,
                             isRooted = isRooted,
-                            styles = styles,
-                            onValueSelected = { selected ->
-                                currentIo = selected
-                                scope.launch(Dispatchers.IO) {
-                                    RootManager.executeRootCommand("echo $selected > $blockPath/scheduler")
-                                    prefs.edit().putString("saved_scheduler", selected).apply()
-                                    withContext(Dispatchers.Main) { Toast.makeText(context, "Scheduler applied!", Toast.LENGTH_SHORT).show() }
-                                }
+                            styles = styles
+                        ) { selected ->
+                            currentIo = selected
+                            writeSimpleValue(schedulerPath, selected) {
+                                prefs.edit().putString("saved_scheduler", selected).apply()
                             }
-                        )
-                        needsDivider = true
+                        }
                     }
 
                     if (readAheadPath != null || !isRooted) {
-                        if (needsDivider) HorizontalDivider(color = styles.titleTextColor.copy(alpha = 0.05f), modifier = Modifier.padding(horizontal = 16.dp))
+                        HorizontalDivider(color = styles.titleTextColor.copy(alpha = 0.05f), modifier = Modifier.padding(horizontal = 16.dp))
                         SettingsDropdownRow(
-                            title = "Read-Ahead Cache",
-                            subtitle = "Higher value speeds up large app launches.",
+                            title = stringResource(R.string.io_readahead_title),
+                            subtitle = stringResource(R.string.io_readahead_subtitle),
                             currentValue = currentReadAhead,
                             availableValues = readAheadLevels,
                             isRooted = isRooted,
-                            styles = styles,
-                            onValueSelected = { selected ->
-                                currentReadAhead = selected
-                                val kb = selected.replace(" KB", "")
-                                scope.launch(Dispatchers.IO) {
-                                    RootManager.executeRootCommand("echo $kb > $readAheadPath")
-                                    prefs.edit().putString("saved_readahead", kb).apply()
-                                }
+                            styles = styles
+                        ) { selected ->
+                            currentReadAhead = selected
+                            val kb = selected.substringBefore(" ")
+                            writeSimpleValue(readAheadPath, kb) {
+                                prefs.edit().putString("saved_readahead", kb).apply()
                             }
-                        )
-                        needsDivider = true
+                        }
                     }
 
                     if (nrRequestsPath != null || !isRooted) {
-                        if (needsDivider) HorizontalDivider(color = styles.titleTextColor.copy(alpha = 0.05f), modifier = Modifier.padding(horizontal = 16.dp))
+                        HorizontalDivider(color = styles.titleTextColor.copy(alpha = 0.05f), modifier = Modifier.padding(horizontal = 16.dp))
                         SettingsDropdownRow(
-                            title = "I/O Queue Depth",
-                            subtitle = "Number of requests device can handle at once.",
-                            currentValue = if (isRooted) currentNrRequests.let { raw -> nrRequestsLevels.find { it.startsWith(raw) } ?: "$raw (Custom)" } else "LOCKED",
+                            title = stringResource(R.string.io_queue_depth_title),
+                            subtitle = stringResource(R.string.io_queue_depth_subtitle),
+                            currentValue = currentNrRequests,
                             availableValues = nrRequestsLevels,
                             isRooted = isRooted,
-                            styles = styles,
-                            onValueSelected = { selected ->
-                                val v = selected.substringBefore(" ")
-                                currentNrRequests = selected
-                                scope.launch(Dispatchers.IO) {
-                                    RootManager.executeRootCommand("echo $v > $nrRequestsPath")
-                                    prefs.edit().putString("saved_nr_requests", v).apply()
-                                }
+                            styles = styles
+                        ) { selected ->
+                            currentNrRequests = selected
+                            val value = selected.substringBefore(" ")
+                            writeSimpleValue(nrRequestsPath, value) {
+                                prefs.edit().putString("saved_nr_requests", value).apply()
                             }
-                        )
-                        needsDivider = true
+                        }
                     }
 
                     if (addRandomPath != null || !isRooted) {
-                        if (needsDivider) HorizontalDivider(color = styles.titleTextColor.copy(alpha = 0.05f), modifier = Modifier.padding(horizontal = 16.dp))
+                        HorizontalDivider(color = styles.titleTextColor.copy(alpha = 0.05f), modifier = Modifier.padding(horizontal = 16.dp))
                         SettingsSwitchRow(
-                            title = "I/O Entropy (Add Random)",
-                            subtitle = "Disable for UFS/SSD to save CPU overhead.",
+                            title = stringResource(R.string.io_add_random_title),
+                            subtitle = stringResource(R.string.io_add_random_subtitle),
                             checked = isAddRandomEnabled,
-                            styles = styles,
-                            onCheckedChange = { isChecked ->
-                                isAddRandomEnabled = isChecked
-                                val value = if (isChecked) "1" else "0"
-                                scope.launch(Dispatchers.IO) {
-                                    RootManager.executeRootCommand("echo $value > $addRandomPath")
-                                    prefs.edit().putString("saved_add_random", value).apply()
-                                }
+                            styles = styles
+                        ) { checked ->
+                            isAddRandomEnabled = checked
+                            val value = if (checked) "1" else "0"
+                            writeSimpleValue(addRandomPath, value) {
+                                prefs.edit().putString("saved_add_random", value).apply()
                             }
-                        )
-                        needsDivider = true
+                        }
                     }
 
                     if (ioStatsPath != null || !isRooted) {
-                        if (needsDivider) HorizontalDivider(color = styles.titleTextColor.copy(alpha = 0.05f), modifier = Modifier.padding(horizontal = 16.dp))
+                        HorizontalDivider(color = styles.titleTextColor.copy(alpha = 0.05f), modifier = Modifier.padding(horizontal = 16.dp))
                         SettingsSwitchRow(
-                            title = "I/O Stats Logging",
-                            subtitle = "Disable to reduce CPU overhead and save battery.",
+                            title = stringResource(R.string.io_iostats_title),
+                            subtitle = stringResource(R.string.io_iostats_subtitle),
                             checked = isIoStatsEnabled,
-                            styles = styles,
-                            onCheckedChange = { isChecked ->
-                                isIoStatsEnabled = isChecked
-                                val value = if (isChecked) "1" else "0"
-                                scope.launch(Dispatchers.IO) {
-                                    RootManager.executeRootCommand("echo $value > $ioStatsPath")
-                                    prefs.edit().putString("saved_iostats", value).apply()
-                                }
+                            styles = styles
+                        ) { checked ->
+                            isIoStatsEnabled = checked
+                            val value = if (checked) "1" else "0"
+                            writeSimpleValue(ioStatsPath, value) {
+                                prefs.edit().putString("saved_iostats", value).apply()
                             }
-                        )
+                        }
                     }
                 }
                 Spacer(modifier = Modifier.height(12.dp))
             }
 
-            // --- БЛОК 2: ОПЕРАТИВНА ПАМ'ЯТЬ (VM / ZRAM) ---
             val showVmSection = zramCompPath != null || swappinessPath != null || pageClusterPath != null || vfsPath != null || !isRooted
             if (showVmSection) {
-                StyledBlockCard(styles = styles, title = "Virtual Memory & ZRAM") {
-                    var needsDivider = false
-
+                StyledBlockCard(styles = styles, title = stringResource(R.string.io_section_vm)) {
                     if (zramCompPath != null || !isRooted) {
                         SettingsDropdownRow(
-                            title = "ZRAM Algorithm",
-                            subtitle = "Select 'zstd' or 'lz4' for best Android 13+ performance.",
-                            currentValue = if (isRooted) currentZramComp else "LOCKED",
+                            title = stringResource(R.string.io_zram_title),
+                            subtitle = stringResource(R.string.io_zram_subtitle),
+                            currentValue = currentZramComp,
                             availableValues = availableZramComps,
                             isRooted = isRooted,
                             styles = styles,
-                            onValueSelected = { selected ->
-                                currentZramComp = selected
-                                scope.launch(Dispatchers.IO) {
-                                    RootManager.executeRootCommand("echo $selected > $zramCompPath")
+                            isBusy = isApplyingZram,
+                            progress = zramProgress,
+                            progressText = zramProgressLabel
+                        ) { selected ->
+                            val previous = currentZramComp
+                            scope.launch(Dispatchers.IO) {
+                                withContext(Dispatchers.Main) {
+                                    isApplyingZram = true
+                                    zramProgress = 0f
+                                    zramProgressLabel = context.getString(R.string.zram_row_progress_format, 0, context.getString(R.string.zram_progress_preparing))
+                                }
+                                KernelOperationNotifier.showProgress(context, context.getString(R.string.zram_progress_preparing), 0)
+
+                                val result = ZramManager.applyCompressionAlgorithm(selected) { stage, progressValue ->
+                                    val stageText = zramStageText(stage)
+                                    withContext(Dispatchers.Main) {
+                                        zramProgress = progressValue / 100f
+                                        zramProgressLabel = context.getString(R.string.zram_row_progress_format, progressValue, stageText)
+                                    }
+                                    KernelOperationNotifier.showProgress(context, stageText, progressValue)
+                                }
+
+                                val success = result.ok
+                                var refreshedCurrent = selected
+                                var refreshedAvailable = availableZramComps
+                                if (success) {
                                     prefs.edit().putString("saved_zram_comp", selected).apply()
+                                    zramCompPath?.let { path ->
+                                        RootManager.readNode(path, forceRefresh = true)?.let { raw ->
+                                            refreshedAvailable = raw.replace("[", "").replace("]", "").split(" ").filter { it.isNotBlank() }
+                                            refreshedCurrent = ZramManager.parseCurrentAlgorithm(raw)
+                                        }
+                                    }
+                                }
+
+                                KernelOperationNotifier.showFinished(
+                                    context,
+                                    if (success) context.getString(R.string.zram_progress_done) else context.getString(R.string.zram_progress_failed),
+                                    success
+                                )
+                                withContext(Dispatchers.Main) {
+                                    if (success) {
+                                        availableZramComps = refreshedAvailable
+                                        currentZramComp = refreshedCurrent
+                                    } else {
+                                        currentZramComp = previous
+                                    }
+                                    Toast.makeText(
+                                        context,
+                                        if (success) context.getString(R.string.zram_toast_success) else context.getString(R.string.zram_toast_failure),
+                                        Toast.LENGTH_SHORT
+                                    ).show()
+                                    zramProgress = null
+                                    zramProgressLabel = null
+                                    isApplyingZram = false
                                 }
                             }
-                        )
-                        needsDivider = true
+                        }
                     }
 
                     if (swappinessPath != null || !isRooted) {
-                        if (needsDivider) HorizontalDivider(color = styles.titleTextColor.copy(alpha = 0.05f), modifier = Modifier.padding(horizontal = 16.dp))
+                        HorizontalDivider(color = styles.titleTextColor.copy(alpha = 0.05f), modifier = Modifier.padding(horizontal = 16.dp))
                         SettingsDropdownRow(
-                            title = "Swappiness",
-                            subtitle = "How aggressively apps are moved to ZRAM.",
+                            title = stringResource(R.string.io_zram_swappiness_title),
+                            subtitle = stringResource(R.string.io_zram_swappiness_subtitle),
                             currentValue = currentSwappiness,
                             availableValues = swappinessLevels,
                             isRooted = isRooted,
-                            styles = styles,
-                            onValueSelected = { selected ->
-                                currentSwappiness = selected
-                                val value = selected.substringBefore(" ")
-                                scope.launch(Dispatchers.IO) {
-                                    RootManager.executeRootCommand("echo $value > $swappinessPath")
-                                    prefs.edit().putString("saved_swappiness", value).apply()
-                                }
+                            styles = styles
+                        ) { selected ->
+                            currentSwappiness = selected
+                            val value = selected.substringBefore(" ")
+                            writeSimpleValue(swappinessPath, value) {
+                                prefs.edit().putString("saved_swappiness", value).apply()
                             }
-                        )
-                        needsDivider = true
+                        }
                     }
 
                     if (pageClusterPath != null || !isRooted) {
-                        if (needsDivider) HorizontalDivider(color = styles.titleTextColor.copy(alpha = 0.05f), modifier = Modifier.padding(horizontal = 16.dp))
+                        HorizontalDivider(color = styles.titleTextColor.copy(alpha = 0.05f), modifier = Modifier.padding(horizontal = 16.dp))
                         SettingsDropdownRow(
-                            title = "Page Cluster",
-                            subtitle = "Number of pages read per swap. '0' is best for ZRAM.",
-                            currentValue = if (isRooted) currentPageCluster.let { raw -> pageClusterLevels.find { it.startsWith(raw) } ?: "$raw (Custom)" } else "LOCKED",
+                            title = stringResource(R.string.io_page_cluster_title),
+                            subtitle = stringResource(R.string.io_page_cluster_subtitle),
+                            currentValue = currentPageCluster,
                             availableValues = pageClusterLevels,
                             isRooted = isRooted,
-                            styles = styles,
-                            onValueSelected = { selected ->
-                                val v = selected.substringBefore(" ")
-                                currentPageCluster = selected
-                                scope.launch(Dispatchers.IO) {
-                                    RootManager.executeRootCommand("echo $v > $pageClusterPath")
-                                    prefs.edit().putString("saved_page_cluster", v).apply()
-                                }
+                            styles = styles
+                        ) { selected ->
+                            currentPageCluster = selected
+                            val value = selected.substringBefore(" ")
+                            writeSimpleValue(pageClusterPath, value) {
+                                prefs.edit().putString("saved_page_cluster", value).apply()
                             }
-                        )
-                        needsDivider = true
+                        }
                     }
 
                     if (vfsPath != null || !isRooted) {
-                        if (needsDivider) HorizontalDivider(color = styles.titleTextColor.copy(alpha = 0.05f), modifier = Modifier.padding(horizontal = 16.dp))
+                        HorizontalDivider(color = styles.titleTextColor.copy(alpha = 0.05f), modifier = Modifier.padding(horizontal = 16.dp))
                         SettingsDropdownRow(
-                            title = "VFS Cache Pressure",
-                            subtitle = "Lower = Snappier gallery/files, uses more RAM.",
+                            title = stringResource(R.string.io_vfs_title),
+                            subtitle = stringResource(R.string.io_vfs_subtitle),
                             currentValue = currentVfs,
                             availableValues = vfsLevels,
                             isRooted = isRooted,
-                            styles = styles,
-                            onValueSelected = { selected ->
-                                currentVfs = selected
-                                val value = selected.substringBefore(" ")
-                                scope.launch(Dispatchers.IO) {
-                                    RootManager.executeRootCommand("echo $value > $vfsPath")
-                                    prefs.edit().putString("saved_vfs", value).apply()
-                                }
+                            styles = styles
+                        ) { selected ->
+                            currentVfs = selected
+                            val value = selected.substringBefore(" ")
+                            writeSimpleValue(vfsPath, value) {
+                                prefs.edit().putString("saved_vfs", value).apply()
                             }
-                        )
+                        }
                     }
                 }
                 Spacer(modifier = Modifier.height(12.dp))
             }
 
-            // --- БЛОК 3: ADVANCED VM (Kernel 5.4 - 6.1+) ---
-            val showAdvVmSection = mglruPath != null || watermarkPath != null
-            if (showAdvVmSection || !isRooted) {
-                StyledBlockCard(styles = styles, title = "Advanced Memory Management") {
-                    var needsDivider = false
-
+            val showAdvVmSection = mglruPath != null || watermarkPath != null || !isRooted
+            if (showAdvVmSection) {
+                StyledBlockCard(styles = styles, title = stringResource(R.string.io_section_adv_vm)) {
                     if (mglruPath != null || !isRooted) {
                         SettingsSwitchRow(
-                            title = "Multi-Gen LRU (MGLRU)",
-                            subtitle = "Kernel 6.1+ feature. Massively reduces CPU usage and improves multitasking.",
+                            title = stringResource(R.string.io_mglru_title),
+                            subtitle = stringResource(R.string.io_mglru_subtitle),
                             checked = isMglruEnabled,
-                            styles = styles,
-                            onCheckedChange = { isChecked ->
-                                isMglruEnabled = isChecked
-                                val value = if (isChecked) "y" else "n" // Використовуємо стандартний синтаксис MGLRU
-                                scope.launch(Dispatchers.IO) {
-                                    RootManager.executeRootCommand("echo $value > $mglruPath")
-                                    prefs.edit().putString("saved_mglru", value).apply()
-                                }
+                            styles = styles
+                        ) { checked ->
+                            isMglruEnabled = checked
+                            val value = if (checked) "y" else "n"
+                            writeSimpleValue(mglruPath, value) {
+                                prefs.edit().putString("saved_mglru", value).apply()
                             }
-                        )
-                        needsDivider = true
+                        }
                     }
 
                     if (watermarkPath != null || !isRooted) {
-                        if (needsDivider) HorizontalDivider(color = styles.titleTextColor.copy(alpha = 0.05f), modifier = Modifier.padding(horizontal = 16.dp))
+                        HorizontalDivider(color = styles.titleTextColor.copy(alpha = 0.05f), modifier = Modifier.padding(horizontal = 16.dp))
                         SettingsDropdownRow(
-                            title = "Watermark Scale Factor",
-                            subtitle = "Higher value wakes kswapd earlier, preventing sudden lag.",
-                            currentValue = if (isRooted) currentWatermark.let { raw -> watermarkLevels.find { it.startsWith(raw) } ?: "$raw (Custom)" } else "LOCKED",
+                            title = stringResource(R.string.io_watermark_title),
+                            subtitle = stringResource(R.string.io_watermark_subtitle),
+                            currentValue = currentWatermark,
                             availableValues = watermarkLevels,
                             isRooted = isRooted,
-                            styles = styles,
-                            onValueSelected = { selected ->
-                                val value = selected.substringBefore(" ")
-                                currentWatermark = selected
-                                scope.launch(Dispatchers.IO) {
-                                    RootManager.executeRootCommand("echo $value > $watermarkPath")
-                                    prefs.edit().putString("saved_watermark_scale", value).apply()
-                                }
+                            styles = styles
+                        ) { selected ->
+                            currentWatermark = selected
+                            val value = selected.substringBefore(" ")
+                            writeSimpleValue(watermarkPath, value) {
+                                prefs.edit().putString("saved_watermark_scale", value).apply()
                             }
-                        )
+                        }
                     }
                 }
                 Spacer(modifier = Modifier.height(12.dp))
             }
 
-            // --- БЛОК 4: КЕШУВАННЯ ДАНИХ (DIRTY CACHE) ---
-            val showDirtySection = dirtyRatioPath != null || dirtyBgRatioPath != null
-            if (showDirtySection || !isRooted) {
-                StyledBlockCard(styles = styles, title = "Data Caching & Dirty Queue") {
-                    var needsDivider = false
-
+            val showDirtySection = dirtyRatioPath != null || dirtyBgRatioPath != null || !isRooted
+            if (showDirtySection) {
+                StyledBlockCard(styles = styles, title = stringResource(R.string.io_section_dirty)) {
                     if (dirtyRatioPath != null || !isRooted) {
                         SettingsDropdownRow(
-                            title = "Dirty Ratio (%)",
-                            subtitle = "Max RAM % used for caching unsaved data.",
-                            currentValue = if (isRooted) currentDirtyRatio.let { raw -> dirtyRatioLevels.find { it.startsWith(raw) } ?: "$raw (Custom)" } else "LOCKED",
+                            title = stringResource(R.string.io_dirty_ratio_title),
+                            subtitle = stringResource(R.string.io_dirty_ratio_subtitle),
+                            currentValue = currentDirtyRatio,
                             availableValues = dirtyRatioLevels,
                             isRooted = isRooted,
-                            styles = styles,
-                            onValueSelected = { selected ->
-                                currentDirtyRatio = selected
-                                val value = selected.substringBefore(" ")
-                                scope.launch(Dispatchers.IO) {
-                                    RootManager.executeRootCommand("echo $value > $dirtyRatioPath")
-                                    prefs.edit().putString("saved_dirty_ratio", value).apply()
-                                }
+                            styles = styles
+                        ) { selected ->
+                            currentDirtyRatio = selected
+                            val value = selected.substringBefore(" ")
+                            writeSimpleValue(dirtyRatioPath, value) {
+                                prefs.edit().putString("saved_dirty_ratio", value).apply()
                             }
-                        )
-                        needsDivider = true
+                        }
                     }
 
                     if (dirtyBgRatioPath != null || !isRooted) {
-                        if (needsDivider) HorizontalDivider(color = styles.titleTextColor.copy(alpha = 0.05f), modifier = Modifier.padding(horizontal = 16.dp))
+                        HorizontalDivider(color = styles.titleTextColor.copy(alpha = 0.05f), modifier = Modifier.padding(horizontal = 16.dp))
                         SettingsDropdownRow(
-                            title = "Dirty Background Ratio (%)",
-                            subtitle = "When to start writing cache to disk in background.",
-                            currentValue = if (isRooted) currentDirtyBgRatio.let { raw -> dirtyBgRatioLevels.find { it.startsWith(raw) } ?: "$raw (Custom)" } else "LOCKED",
+                            title = stringResource(R.string.io_dirty_bg_ratio_title),
+                            subtitle = stringResource(R.string.io_dirty_bg_ratio_subtitle),
+                            currentValue = currentDirtyBgRatio,
                             availableValues = dirtyBgRatioLevels,
                             isRooted = isRooted,
-                            styles = styles,
-                            onValueSelected = { selected ->
-                                currentDirtyBgRatio = selected
-                                val value = selected.substringBefore(" ")
-                                scope.launch(Dispatchers.IO) {
-                                    RootManager.executeRootCommand("echo $value > $dirtyBgRatioPath")
-                                    prefs.edit().putString("saved_dirty_bg_ratio", value).apply()
-                                }
+                            styles = styles
+                        ) { selected ->
+                            currentDirtyBgRatio = selected
+                            val value = selected.substringBefore(" ")
+                            writeSimpleValue(dirtyBgRatioPath, value) {
+                                prefs.edit().putString("saved_dirty_bg_ratio", value).apply()
                             }
-                        )
+                        }
                     }
                 }
             }

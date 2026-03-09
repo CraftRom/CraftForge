@@ -19,6 +19,7 @@ import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
@@ -28,6 +29,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -36,6 +38,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.TextUnit
+import com.craftforge.app.R
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
@@ -170,7 +173,7 @@ fun SettingsBadgeRow(title: String, subtitle: String, value: String, isRooted: B
         Column(modifier = Modifier.weight(1f).padding(end = 16.dp)) {
             Text(text = title, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = if (isRooted) styles.titleTextColor else styles.titleTextColor.copy(alpha = 0.5f))
             Spacer(modifier = Modifier.height(4.dp))
-            Text(text = if (isRooted) subtitle else "Requires Root access to read data.", fontSize = 12.sp, color = styles.mutedTextColor, lineHeight = 16.sp)
+            Text(text = if (isRooted) subtitle else stringResource(R.string.common_requires_root_read), fontSize = 12.sp, color = styles.mutedTextColor, lineHeight = 16.sp)
         }
         Box(
             modifier = Modifier
@@ -180,55 +183,84 @@ fun SettingsBadgeRow(title: String, subtitle: String, value: String, isRooted: B
                 .padding(horizontal = 12.dp, vertical = 7.dp),
             contentAlignment = Alignment.Center
         ) {
-            Text(text = if (isRooted) value else "LOCKED", fontSize = 12.sp, color = if (isRooted) styles.accentColor else MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold, maxLines = 1)
+            Text(text = if (isRooted) value else stringResource(R.string.common_locked), fontSize = 12.sp, color = if (isRooted) styles.accentColor else MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold, maxLines = 1)
         }
     }
 }
 
 @Composable
-fun SettingsDropdownRow(title: String, subtitle: String, currentValue: String, availableValues: List<String>, isRooted: Boolean, styles: InfoCardStyles = infoCardStyles(), onValueSelected: (String) -> Unit) {
+fun SettingsDropdownRow(
+    title: String,
+    subtitle: String,
+    currentValue: String,
+    availableValues: List<String>,
+    isRooted: Boolean,
+    styles: InfoCardStyles = infoCardStyles(),
+    isBusy: Boolean = false,
+    progress: Float? = null,
+    progressText: String? = null,
+    onValueSelected: (String) -> Unit
+) {
     var expanded by remember { mutableStateOf(false) }
-    Row(
+    Column(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 12.dp, vertical = 8.dp)
             .clip(RoundedCornerShape(styles.rowCornerRadius))
             .background(styles.rowBackgroundColor)
-            .padding(horizontal = 14.dp, vertical = 13.dp),
-        verticalAlignment = Alignment.CenterVertically
+            .padding(horizontal = 14.dp, vertical = 13.dp)
     ) {
-        Column(modifier = Modifier.weight(1f).padding(end = 16.dp)) {
-            Text(text = title, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = if (isRooted) styles.titleTextColor else styles.titleTextColor.copy(alpha = 0.5f))
-            Spacer(modifier = Modifier.height(4.dp))
-            Text(text = if (isRooted) subtitle else "Requires Root access to modify.", fontSize = 12.sp, color = styles.mutedTextColor, lineHeight = 16.sp)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f).padding(end = 16.dp)) {
+                Text(text = title, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = if (isRooted) styles.titleTextColor else styles.titleTextColor.copy(alpha = 0.5f))
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(text = if (isRooted) subtitle else stringResource(R.string.common_requires_root_modify), fontSize = 12.sp, color = styles.mutedTextColor, lineHeight = 16.sp)
+            }
+            Box {
+                Row(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(if (isRooted) styles.chipBackgroundColor else MaterialTheme.colorScheme.error.copy(alpha = 0.08f))
+                        .border(1.dp, if (isRooted) styles.accentColor.copy(alpha = 0.2f) else MaterialTheme.colorScheme.error.copy(alpha = 0.2f), RoundedCornerShape(10.dp))
+                        .clickable(enabled = isRooted && availableValues.isNotEmpty() && !isBusy) { expanded = true }
+                        .padding(horizontal = 12.dp, vertical = 9.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = if (isRooted) currentValue else stringResource(R.string.common_locked),
+                        fontSize = 12.sp,
+                        color = if (isRooted) styles.accentColor else MaterialTheme.colorScheme.error,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    if (isRooted && availableValues.isNotEmpty()) {
+                        Icon(imageVector = Icons.Default.ArrowDropDown, contentDescription = null, tint = styles.accentColor, modifier = Modifier.padding(start = 4.dp).size(16.dp))
+                    }
+                }
+                DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }, modifier = Modifier.background(styles.cardBackgroundColor)) {
+                    availableValues.forEach { value ->
+                        DropdownMenuItem(text = { Text(text = value, color = styles.titleTextColor) }, onClick = { expanded = false; onValueSelected(value) })
+                    }
+                }
+            }
         }
-        Box {
-            Row(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(if (isRooted) styles.chipBackgroundColor else MaterialTheme.colorScheme.error.copy(alpha = 0.08f))
-                    .border(1.dp, if (isRooted) styles.accentColor.copy(alpha = 0.2f) else MaterialTheme.colorScheme.error.copy(alpha = 0.2f), RoundedCornerShape(10.dp))
-                    .clickable(enabled = isRooted && availableValues.isNotEmpty()) { expanded = true }
-                    .padding(horizontal = 12.dp, vertical = 9.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = currentValue,
-                    fontSize = 12.sp,
-                    color = if (isRooted) styles.accentColor else MaterialTheme.colorScheme.error,
-                    fontWeight = FontWeight.Bold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                if (isRooted && availableValues.isNotEmpty()) {
-                    Icon(imageVector = Icons.Default.ArrowDropDown, contentDescription = "Select", tint = styles.accentColor, modifier = Modifier.padding(start = 4.dp).size(16.dp))
-                }
+
+        if (isBusy || progress != null || !progressText.isNullOrBlank()) {
+            Spacer(modifier = Modifier.height(10.dp))
+            if (!progressText.isNullOrBlank()) {
+                Text(text = progressText, fontSize = 11.sp, color = styles.mutedTextColor)
+                Spacer(modifier = Modifier.height(6.dp))
             }
-            DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }, modifier = Modifier.background(styles.cardBackgroundColor)) {
-                availableValues.forEach { value ->
-                    DropdownMenuItem(text = { Text(text = value, color = styles.titleTextColor) }, onClick = { expanded = false; onValueSelected(value) })
-                }
-            }
+            LinearProgressIndicator(
+                progress = progress?.coerceIn(0f, 1f) ?: 0f,
+                modifier = Modifier.fillMaxWidth(),
+                color = styles.accentColor,
+                trackColor = styles.progressTrackColor
+            )
         }
     }
 }

@@ -17,9 +17,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.craftforge.app.R
 import com.craftforge.app.data.DeviceInfoProvider
 import com.craftforge.app.service.TweaksService
 import com.craftforge.app.ui.theme.*
@@ -76,7 +78,7 @@ fun MainTweaksMenu(isRooted: Boolean, onNavigate: (TweaksRoute) -> Unit) {
         ) {
             item {
                 Text(
-                    text = "System Tweaks",
+                    text = stringResource(R.string.tweaks_title),
                     style = MaterialTheme.typography.headlineLarge,
                     color = styles.titleTextColor,
                     modifier = Modifier.padding(16.dp)
@@ -84,9 +86,9 @@ fun MainTweaksMenu(isRooted: Boolean, onNavigate: (TweaksRoute) -> Unit) {
             }
 
             item {
-                StyledBlockCard(styles = styles, title = "Background Service") {
+                StyledBlockCard(styles = styles, title = stringResource(R.string.tweaks_service_section)) {
                     SettingsSwitchRow(
-                        title = "Run in Background", subtitle = "Keep optimizations active.", checked = runInBg, styles = styles,
+                        title = stringResource(R.string.tweaks_run_background), subtitle = stringResource(R.string.tweaks_run_background_subtitle), checked = runInBg, styles = styles,
                         onCheckedChange = {
                             runInBg = it
                             if (it) startTweakService(context) else context.stopService(Intent(context, TweaksService::class.java))
@@ -94,7 +96,7 @@ fun MainTweaksMenu(isRooted: Boolean, onNavigate: (TweaksRoute) -> Unit) {
                     )
                     HorizontalDivider(color = styles.titleTextColor.copy(alpha = 0.05f), modifier = Modifier.padding(horizontal = 16.dp))
                     SettingsSwitchRow(
-                        title = "Apply on Boot", subtitle = "Start service on device boot.", checked = runOnBoot, styles = styles,
+                        title = stringResource(R.string.tweaks_apply_boot), subtitle = stringResource(R.string.tweaks_apply_boot_subtitle), checked = runOnBoot, styles = styles,
                         onCheckedChange = {
                             runOnBoot = it
                             prefs.edit().putBoolean("run_on_boot", it).apply()
@@ -106,17 +108,17 @@ fun MainTweaksMenu(isRooted: Boolean, onNavigate: (TweaksRoute) -> Unit) {
             // ОПТИМІЗАЦІЯ: 4 окремі кнопки
             item {
                 Spacer(modifier = Modifier.height(8.dp))
-                StyledBlockCard(styles = styles, title = "Kernel Profiles (Root)") {
-                    SettingsNavigationRow(title = "CPU Configuration", subtitle = "Governors, frequencies.", styles = styles) { onNavigate(TweaksRoute.CPU_CONFIG) }
+                StyledBlockCard(styles = styles, title = stringResource(R.string.tweaks_kernel_profiles)) {
+                    SettingsNavigationRow(title = stringResource(R.string.tweaks_cpu_config), subtitle = stringResource(R.string.tweaks_cpu_config_subtitle), styles = styles) { onNavigate(TweaksRoute.CPU_CONFIG) }
                     HorizontalDivider(color = styles.titleTextColor.copy(alpha = 0.05f), modifier = Modifier.padding(horizontal = 16.dp))
 
-                    SettingsNavigationRow(title = "GPU Configuration", subtitle = "Adreno/Mali tuning.", styles = styles) { onNavigate(TweaksRoute.GPU_CONFIG) }
+                    SettingsNavigationRow(title = stringResource(R.string.tweaks_gpu_config), subtitle = stringResource(R.string.tweaks_gpu_config_subtitle), styles = styles) { onNavigate(TweaksRoute.GPU_CONFIG) }
                     HorizontalDivider(color = styles.titleTextColor.copy(alpha = 0.05f), modifier = Modifier.padding(horizontal = 16.dp))
 
-                    SettingsNavigationRow(title = "Storage & I/O", subtitle = "Disk schedulers.", styles = styles) { onNavigate(TweaksRoute.IO_CONFIG) }
+                    SettingsNavigationRow(title = stringResource(R.string.tweaks_io_config), subtitle = stringResource(R.string.tweaks_io_config_subtitle), styles = styles) { onNavigate(TweaksRoute.IO_CONFIG) }
                     HorizontalDivider(color = styles.titleTextColor.copy(alpha = 0.05f), modifier = Modifier.padding(horizontal = 16.dp))
 
-                    SettingsNavigationRow(title = "Network Tuning", subtitle = "TCP algorithms.", styles = styles) { onNavigate(TweaksRoute.NET_CONFIG) }
+                    SettingsNavigationRow(title = stringResource(R.string.tweaks_net_config), subtitle = stringResource(R.string.tweaks_net_config_subtitle), styles = styles) { onNavigate(TweaksRoute.NET_CONFIG) }
                 }
             }
         }
@@ -147,7 +149,7 @@ fun SettingsNavigationRow(title: String, subtitle: String, styles: InfoCardStyle
                 .padding(horizontal = 12.dp, vertical = 7.dp),
             contentAlignment = Alignment.Center
         ) {
-            Text(text = "OPEN", fontSize = 12.sp, color = styles.accentColor, fontWeight = FontWeight.Bold)
+            Text(text = stringResource(R.string.common_open), fontSize = 12.sp, color = styles.accentColor, fontWeight = FontWeight.Bold)
         }
     }
 }
@@ -163,12 +165,12 @@ fun ConfigScreenLayout(title: String, styles: InfoCardStyles, onBack: () -> Unit
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 IconButton(onClick = onBack) {
-                    Icon(imageVector = Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = styles.titleTextColor)
+                    Icon(imageVector = Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.common_back), tint = styles.titleTextColor)
                 }
                 Spacer(modifier = Modifier.width(8.dp))
                 Column {
                     Text(text = title, style = MaterialTheme.typography.headlineMedium, color = styles.titleTextColor)
-                    Text(text = "Сумісний профіль для різних ядер і прошивок", style = MaterialTheme.typography.bodySmall, color = styles.mutedTextColor)
+                    Text(text = stringResource(R.string.config_screen_subtitle), style = MaterialTheme.typography.bodySmall, color = styles.mutedTextColor)
                 }
             }
             content()

@@ -1,3 +1,150 @@
 <resources>
     <string name="app_name">CraftForge</string>
+
+    <string name="common_loading">Loading…</string>
+    <string name="common_locked">LOCKED</string>
+    <string name="common_unknown">Unknown</string>
+    <string name="common_virtual_unknown">Virtual / Unknown</string>
+    <string name="common_custom_format">%1$s (Custom)</string>
+    <string name="common_requires_root_read">Requires root access to read data.</string>
+    <string name="common_requires_root_modify">Requires root access to modify.</string>
+    <string name="common_open">OPEN</string>
+    <string name="common_back">Back</string>
+    <string name="common_root_locked_toast">Root is not available — LOCKED mode.</string>
+    <string name="common_scanning">Scanning…</string>
+    <string name="common_ready">READY</string>
+    <string name="common_empty">EMPTY</string>
+    <string name="common_done">Done</string>
+    <string name="common_failed">Failed</string>
+
+    <string name="tweaks_title">System Tweaks</string>
+    <string name="tweaks_service_section">Background Service</string>
+    <string name="tweaks_run_background">Run in Background</string>
+    <string name="tweaks_run_background_subtitle">Keep optimizations active.</string>
+    <string name="tweaks_apply_boot">Apply on Boot</string>
+    <string name="tweaks_apply_boot_subtitle">Start service on device boot.</string>
+    <string name="tweaks_kernel_profiles">Kernel Profiles (Root)</string>
+    <string name="tweaks_cpu_config">CPU Configuration</string>
+    <string name="tweaks_cpu_config_subtitle">Governors and frequencies.</string>
+    <string name="tweaks_gpu_config">GPU Configuration</string>
+    <string name="tweaks_gpu_config_subtitle">Adreno / Mali tuning.</string>
+    <string name="tweaks_io_config">Storage &amp; I/O</string>
+    <string name="tweaks_io_config_subtitle">Disk, ZRAM, and VM tuning.</string>
+    <string name="tweaks_net_config">Network Tuning</string>
+    <string name="tweaks_net_config_subtitle">TCP and protocol settings.</string>
+    <string name="config_screen_subtitle">Compatible profile for different kernels and ROMs.</string>
+
+    <string name="io_screen_title">Storage &amp; Memory</string>
+    <string name="io_section_storage">Storage Queue</string>
+    <string name="io_section_vm">Virtual Memory &amp; ZRAM</string>
+    <string name="io_section_adv_vm">Advanced Memory Management</string>
+    <string name="io_section_dirty">Data Caching &amp; Dirty Queue</string>
+
+    <string name="io_device_type">Storage Type</string>
+    <string name="io_device_type_subtitle">Detected primary block device for queue tuning.</string>
+    <string name="io_device_ufs">UFS (sda)</string>
+    <string name="io_device_emmc">eMMC (mmcblk0)</string>
+    <string name="io_value_unavailable">Unavailable</string>
+
+    <string name="io_scheduler_title">I/O Scheduler</string>
+    <string name="io_scheduler_subtitle">Choose a scheduler tuned for responsiveness or throughput.</string>
+    <string name="io_readahead_title">Read-Ahead Cache</string>
+    <string name="io_readahead_subtitle">Higher values can speed up large sequential reads.</string>
+    <string name="io_queue_depth_title">I/O Queue Depth</string>
+    <string name="io_queue_depth_subtitle">Number of queued requests the device can handle at once.</string>
+    <string name="io_add_random_title">I/O Entropy (Add Random)</string>
+    <string name="io_add_random_subtitle">Disable on fast flash storage to reduce CPU overhead.</string>
+    <string name="io_iostats_title">I/O Stats Logging</string>
+    <string name="io_iostats_subtitle">Disable to reduce overhead and save battery.</string>
+
+    <string name="io_zram_title">ZRAM Algorithm</string>
+    <string name="io_zram_subtitle">Apply a compression algorithm using a safe reset / restore flow.</string>
+    <string name="io_zram_swappiness_title">Swappiness</string>
+    <string name="io_zram_swappiness_subtitle">How aggressively memory pages are pushed into ZRAM.</string>
+    <string name="io_page_cluster_title">Page Cluster</string>
+    <string name="io_page_cluster_subtitle">Pages read per swap operation. “0” is usually best for ZRAM.</string>
+    <string name="io_vfs_title">VFS Cache Pressure</string>
+    <string name="io_vfs_subtitle">Lower values keep file metadata cached longer.</string>
+    <string name="io_mglru_title">Multi-Gen LRU (MGLRU)</string>
+    <string name="io_mglru_subtitle">Modern reclaim algorithm that can improve multitasking and efficiency.</string>
+    <string name="io_watermark_title">Watermark Scale Factor</string>
+    <string name="io_watermark_subtitle">Higher values wake kswapd earlier and can reduce sudden lag.</string>
+    <string name="io_dirty_ratio_title">Dirty Ratio (%%)</string>
+    <string name="io_dirty_ratio_subtitle">Maximum RAM percentage used for dirty cache.</string>
+    <string name="io_dirty_bg_ratio_title">Dirty Background Ratio (%%)</string>
+    <string name="io_dirty_bg_ratio_subtitle">Threshold for background writeback of cached data.</string>
+
+    <string name="io_readahead_128">128 KB</string>
+    <string name="io_readahead_256">256 KB</string>
+    <string name="io_readahead_512">512 KB</string>
+    <string name="io_readahead_1024">1024 KB</string>
+    <string name="io_readahead_2048">2048 KB</string>
+
+    <string name="io_nr_requests_64">64</string>
+    <string name="io_nr_requests_128">128 (Default)</string>
+    <string name="io_nr_requests_256">256 (Performance)</string>
+    <string name="io_nr_requests_512">512 (Max I/O)</string>
+
+    <string name="io_swappiness_0">0 (Disabled)</string>
+    <string name="io_swappiness_30">30 (Light)</string>
+    <string name="io_swappiness_60">60 (Balanced)</string>
+    <string name="io_swappiness_100">100 (Aggressive)</string>
+    <string name="io_swappiness_150">150 (ZRAM Max)</string>
+
+    <string name="io_page_cluster_0">0 (Optimal for ZRAM)</string>
+    <string name="io_page_cluster_1">1</string>
+    <string name="io_page_cluster_2">2</string>
+    <string name="io_page_cluster_3">3 (Default for HDD)</string>
+
+    <string name="io_vfs_10">10 (Keep Cache Longer)</string>
+    <string name="io_vfs_50">50</string>
+    <string name="io_vfs_100">100 (Default)</string>
+    <string name="io_vfs_150">150 (Drop Faster)</string>
+
+    <string name="io_watermark_10">10 (Default)</string>
+    <string name="io_watermark_50">50 (Aggressive kswapd)</string>
+    <string name="io_watermark_100">100</string>
+    <string name="io_watermark_200">200 (Gaming Mode)</string>
+
+    <string name="io_dirty_ratio_5">5 (Max I/O Smoothness)</string>
+    <string name="io_dirty_ratio_10">10</string>
+    <string name="io_dirty_ratio_20">20 (Default)</string>
+    <string name="io_dirty_ratio_30">30 (Max App Cache)</string>
+
+    <string name="io_dirty_bg_ratio_2">2</string>
+    <string name="io_dirty_bg_ratio_5">5</string>
+    <string name="io_dirty_bg_ratio_10">10 (Default)</string>
+    <string name="io_dirty_bg_ratio_15">15</string>
+
+    <string name="io_kb_format">%1$s KB</string>
+    <string name="io_storage_badge_subtitle">Detected primary block queue and scheduler domain.</string>
+
+    <string name="zram_notification_channel_name">Kernel Operations</string>
+    <string name="zram_notification_channel_desc">Shows progress for live kernel changes.</string>
+    <string name="zram_notification_title">Applying ZRAM Changes</string>
+    <string name="zram_progress_preparing">Preparing ZRAM state…</string>
+    <string name="zram_progress_swapoff">Disabling current swap…</string>
+    <string name="zram_progress_reset">Resetting ZRAM device…</string>
+    <string name="zram_progress_set_algo">Applying compression algorithm…</string>
+    <string name="zram_progress_restore_size">Restoring ZRAM size…</string>
+    <string name="zram_progress_reenable_swap">Re-enabling swap…</string>
+    <string name="zram_progress_verify">Verifying current state…</string>
+    <string name="zram_progress_done">ZRAM update completed.</string>
+    <string name="zram_progress_failed">ZRAM update failed.</string>
+    <string name="zram_row_progress_format">%1$d%% • %2$s</string>
+    <string name="zram_toast_success">ZRAM algorithm applied successfully.</string>
+    <string name="zram_toast_failure">Failed to apply ZRAM algorithm.</string>
+
+    <string name="service_channel_name">Core System Service</string>
+    <string name="service_channel_desc">Critical service for hardware performance and kernel tuning.</string>
+    <string name="service_notification_title">CraftForge Engine</string>
+    <string name="service_notification_init">Initializing optimization core…</string>
+    <string name="service_notification_cpu_scan">Scanning CPU topology…</string>
+    <string name="service_notification_zram">Applying ZRAM configuration…</string>
+    <string name="service_notification_other">Applying storage, memory, and network tweaks…</string>
+    <string name="service_notification_finalize">Finalizing runtime profile…</string>
+    <string name="service_notification_subtext">Hardware tuned successfully.</string>
+    <string name="service_notification_active_ok">Optimizations active • CPU %1$d writes</string>
+    <string name="service_notification_active_mixed">Optimizations active • CPU %1$d OK / %2$d skipped</string>
+    <string name="service_notification_step_format">%1$s (%2$d/%3$d)</string>
 </resources>

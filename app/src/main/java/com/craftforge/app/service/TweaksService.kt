@@ -11,8 +11,11 @@ import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import com.craftforge.app.MainActivity
+import com.craftforge.app.R
 import com.craftforge.app.util.KernelControlEngine
 import com.craftforge.app.util.RootManager
+import com.craftforge.app.util.ZramApplyStage
+import com.craftforge.app.util.ZramManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -69,8 +72,8 @@ class TweaksService : Service() {
         )
 
         notificationBuilder = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("CraftForge Engine")
-            .setContentText("Initializing optimization core...")
+            .setContentTitle(getString(R.string.service_notification_title))
+            .setContentText(getString(R.string.service_notification_init))
             .setSmallIcon(android.R.drawable.ic_menu_manage)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
@@ -95,13 +98,34 @@ class TweaksService : Service() {
 
     private suspend fun applySystemTweaksWithProgress() {
         val prefs = getSharedPreferences("TweaksPrefs", MODE_PRIVATE)
-        updateNotificationProgress("Scanning CPU topology...", 0, 3)
+        updateNotificationProgress(getString(R.string.service_notification_cpu_scan), 1, 4)
 
         val cpuResults = withTimeoutOrNull(EXECUTION_TIMEOUT) {
             KernelControlEngine.applySavedCpuTweaks(prefs)
         }.orEmpty()
 
-        updateNotificationProgress("Applying storage / memory / network tweaks...", 1, 3)
+        val savedZramComp = prefs.getString("saved_zram_comp", null)?.trim().orEmpty()
+        if (savedZramComp.isNotEmpty()) {
+            updateNotificationProgress(getString(R.string.service_notification_zram), 2, 4)
+            withTimeoutOrNull(EXECUTION_TIMEOUT) {
+                ZramManager.applyCompressionAlgorithm(savedZramComp) { stage, progress ->
+                    val text = when (stage) {
+                        ZramApplyStage.PREPARING -> getString(R.string.zram_progress_preparing)
+                        ZramApplyStage.SWAPOFF -> getString(R.string.zram_progress_swapoff)
+                        ZramApplyStage.RESETTING -> getString(R.string.zram_progress_reset)
+                        ZramApplyStage.SETTING_ALGO -> getString(R.string.zram_progress_set_algo)
+                        ZramApplyStage.RESTORING_SIZE -> getString(R.string.zram_progress_restore_size)
+                        ZramApplyStage.REENABLING_SWAP -> getString(R.string.zram_progress_reenable_swap)
+                        ZramApplyStage.VERIFYING -> getString(R.string.zram_progress_verify)
+                        ZramApplyStage.DONE -> getString(R.string.zram_progress_done)
+                    }
+                    notificationBuilder.setContentText(text).setProgress(100, progress, false)
+                    notificationManager.notify(NOTIFICATION_ID, notificationBuilder.build())
+                }
+            }
+        }
+
+        updateNotificationProgress(getString(R.string.service_notification_other), 3, 4)
         val commands = buildNonCpuCommands(prefs)
 
         if (commands.isNotEmpty()) {
@@ -113,12 +137,12 @@ class TweaksService : Service() {
         val failedCpuWrites = cpuResults.count { !it.ok }
         val appliedCpuWrites = cpuResults.count { it.ok }
 
-        updateNotificationProgress("Finalizing runtime profile...", 2, 3)
+        updateNotificationProgress(getString(R.string.service_notification_finalize), 4, 4)
         updateNotificationFinal(
             if (failedCpuWrites == 0) {
-                "Optimizations Active • CPU $appliedCpuWrites writes"
+                getString(R.string.service_notification_active_ok, appliedCpuWrites)
             } else {
-                "Optimizations Active • CPU $appliedCpuWrites OK / $failedCpuWrites skipped"
+                getString(R.string.service_notification_active_mixed, appliedCpuWrites, failedCpuWrites)
             }
         )
     }
@@ -159,7 +183,6 @@ class TweaksService : Service() {
         addLoopWrites(commands, prefs.getString("saved_iostats", null), "/sys/block/*/queue", "iostats")
 
         // Memory / VM
-        addWrites(commands, prefs.getString("saved_zram_comp", null), "/sys/block/zram0/comp_algorithm")
         addWrites(commands, prefs.getString("saved_swappiness", null), "/proc/sys/vm/swappiness")
         addWrites(commands, prefs.getString("saved_page_cluster", null), "/proc/sys/vm/page-cluster")
         addWrites(commands, prefs.getString("saved_vfs", null), "/proc/sys/vm/vfs_cache_pressure")
@@ -182,14 +205,15 @@ class TweaksService : Service() {
     }
 
     private fun updateNotificationProgress(taskText: String, step: Int, totalSteps: Int) {
-        notificationBuilder.setContentText("$taskText ($step/$totalSteps)")
+        notificationBuilder
+            .setContentText(getString(R.string.service_notification_step_format, taskText, step, totalSteps))
             .setProgress(totalSteps, step, false)
         notificationManager.notify(NOTIFICATION_ID, notificationBuilder.build())
     }
 
     private fun updateNotificationFinal(finalText: String) {
         notificationBuilder.setContentText(finalText)
-            .setSubText("Hardware tuned successfully")
+            .setSubText(getString(R.string.service_notification_subtext))
             .setProgress(0, 0, false)
         notificationManager.notify(NOTIFICATION_ID, notificationBuilder.build())
     }
@@ -205,10 +229,10 @@ class TweaksService : Service() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
                 CHANNEL_ID,
-                "Core System Service",
+                getString(R.string.service_channel_name),
                 NotificationManager.IMPORTANCE_LOW
             ).apply {
-                description = "Critical service for hardware performance and kernel tweaks"
+                description = getString(R.string.service_channel_desc)
                 setShowBadge(false)
                 lockscreenVisibility = Notification.VISIBILITY_PUBLIC
             }
