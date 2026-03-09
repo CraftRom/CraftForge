@@ -1,6 +1,7 @@
 package com.craftforge.app.ui.viewmodel
 
 import android.content.Context
+import android.os.SystemClock
 import androidx.compose.runtime.mutableStateOf
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
@@ -21,6 +22,7 @@ class DeviceDetailViewModel(context: Context) : ViewModel() {
 
     private val provider = DeviceInfoProvider(context)
     private var isUpdating = false
+    private val refreshIntervalMs = if (provider.isLowRamDeviceFast()) 2_200L else 1_200L
 
     val headData = mutableStateOf<List<DeviceInfoItem>>(emptyList())
     val systemData = mutableStateOf<List<DeviceInfoSection>>(emptyList())
@@ -44,23 +46,22 @@ class DeviceDetailViewModel(context: Context) : ViewModel() {
         isUpdating = true
 
         viewModelScope.launch(Dispatchers.IO) {
-            try {
+            runCatching {
+                provider.warmUpBackgroundCaches()
                 val staticInfo = provider.getStaticDeviceInfo()
                 staticInfoCache = staticInfo
                 initializeStaticData(staticInfo)
-            } catch (e: Exception) {
-                e.printStackTrace()
             }
 
             while (isActive) {
-                try {
+                val loopStartedAt = SystemClock.elapsedRealtime()
+                runCatching {
                     staticInfoCache?.let { staticInfo ->
                         updateDynamicData(staticInfo, provider.getDynamicDeviceInfo())
                     }
-                } catch (e: Exception) {
-                    e.printStackTrace()
                 }
-                delay(1000L)
+                val spent = SystemClock.elapsedRealtime() - loopStartedAt
+                delay((refreshIntervalMs - spent).coerceAtLeast(400L))
             }
         }
     }

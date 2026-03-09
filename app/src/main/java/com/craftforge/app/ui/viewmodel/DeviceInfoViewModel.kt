@@ -6,12 +6,14 @@ import android.app.Application
 import android.content.Context
 import android.os.Environment
 import android.os.StatFs
+import android.os.SystemClock
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.craftforge.app.data.DeviceInfoProvider
 import com.craftforge.app.data.models.BatteryData
 import com.craftforge.app.data.models.RamData
 import com.craftforge.app.data.models.StorageData
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.isActive
@@ -22,8 +24,13 @@ class DeviceInfoViewModel(application: Application) : AndroidViewModel(applicati
     @SuppressLint("StaticFieldLeak")
     private val context = application.applicationContext
     private val provider = DeviceInfoProvider(context)
+    private val activityManager by lazy(LazyThreadSafetyMode.NONE) { context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager }
     private val maxHistory = 50
-    private val updateIntervalMs = 1500L
+    private val isLowRamDevice = provider.isLowRamDeviceFast()
+    private val loopDelayMs = if (isLowRamDevice) 1200L else 800L
+    private val ramIntervalMs = if (isLowRamDevice) 2200L else 1200L
+    private val storageIntervalMs = if (isLowRamDevice) 15_000L else 8_000L
+    private val batteryIntervalMs = if (isLowRamDevice) 3_000L else 1_500L
     private val _ramHistory = MutableStateFlow<List<Float>>(emptyList())
 
     val ramData = MutableStateFlow(
@@ -43,18 +50,31 @@ class DeviceInfoViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     private fun startUpdates() {
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.Default) {
+            var nextRamAt = 0L
+            var nextStorageAt = 0L
+            var nextBatteryAt = 0L
+
             while (isActive) {
-                updateRam()
-                updateStorage()
-                updateBattery()
-                delay(updateIntervalMs)
+                val now = SystemClock.elapsedRealtime()
+                if (now >= nextRamAt) {
+                    updateRam()
+                    nextRamAt = now + ramIntervalMs
+                }
+                if (now >= nextStorageAt) {
+                    updateStorage()
+                    nextStorageAt = now + storageIntervalMs
+                }
+                if (now >= nextBatteryAt) {
+                    updateBattery()
+                    nextBatteryAt = now + batteryIntervalMs
+                }
+                delay(loopDelayMs)
             }
         }
     }
 
     private fun updateRam() {
-        val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
         val memInfo = ActivityManager.MemoryInfo()
         activityManager.getMemoryInfo(memInfo)
 
@@ -96,15 +116,9 @@ class DeviceInfoViewModel(application: Application) : AndroidViewModel(applicati
 
     @SuppressLint("MissingPermission")
     private fun updateBattery() {
-        runCatching { provider.getDynamicDeviceInfo() }
+        runCatching { provider.getBatteryDashboardData() }
             .onSuccess { info ->
-                batteryData.value = BatteryData(
-                    levelPercent = info.batteryPercent,
-                    voltageMv = info.batteryVoltageMv,
-                    batteryChargePower = info.batteryPowerWatts,
-                    temperature = info.batteryTemperatureC.toInt(),
-                    isCharging = info.isCharging
-                )
+                batteryData.value = info
             }
     }
 }

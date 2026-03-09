@@ -5,8 +5,6 @@ import android.content.Context
 import android.util.Log
 import android.widget.Toast
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
@@ -21,13 +19,19 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+
+private val CPU_SCHED_BOOST_LEVELS = listOf("0 (Disabled)", "1 (Performance)", "2 (Aggressive)", "3 (Max Load)")
+private val CPU_MIGRATE_LEVELS = listOf("95 85 (Battery)", "85 75 (Default)", "75 65 (Performance)", "60 50 (Gaming)")
+private val CPU_INIT_UTIL_LEVELS = listOf("0 (Max Battery)", "15 (Balanced)", "30 (Performance)", "50 (Gaming)")
+private val CPU_CAPACITY_MARGIN_LEVELS = listOf("1024 (Balanced)", "1150 (Smooth)", "1280 (Performance)", "1536 (Gaming)")
+private val CPU_TIMING_RATES = listOf("500", "1000", "2000", "4000", "8000", "10000", "20000")
+
 @Composable
 fun CpuConfigScreen(isRooted: Boolean, onBack: () -> Unit) {
     val context = LocalContext.current
     val prefs = context.getSharedPreferences("TweaksPrefs", Context.MODE_PRIVATE)
     val styles = infoCardStyles()
     val scope = rememberCoroutineScope()
-    val scrollState = rememberScrollState()
 
     // ----------------------------
     // System state
@@ -40,11 +44,11 @@ fun CpuConfigScreen(isRooted: Boolean, onBack: () -> Unit) {
     // ----------------------------
     // UI lists
     // ----------------------------
-    val schedBoostLevels = listOf("0 (Disabled)", "1 (Performance)", "2 (Aggressive)", "3 (Max Load)")
-    val migrateLevels = listOf("95 85 (Battery)", "85 75 (Default)", "75 65 (Performance)", "60 50 (Gaming)")
-    val initUtilLevels = listOf("0 (Max Battery)", "15 (Balanced)", "30 (Performance)", "50 (Gaming)")
-    val capacityMarginLevels = listOf("1024 (Balanced)", "1150 (Smooth)", "1280 (Performance)", "1536 (Gaming)")
-    val timingRates = listOf("500", "1000", "2000", "4000", "8000", "10000", "20000")
+    val schedBoostLevels = CPU_SCHED_BOOST_LEVELS
+    val migrateLevels = CPU_MIGRATE_LEVELS
+    val initUtilLevels = CPU_INIT_UTIL_LEVELS
+    val capacityMarginLevels = CPU_CAPACITY_MARGIN_LEVELS
+    val timingRates = CPU_TIMING_RATES
 
     // ----------------------------
     // Global states (system defaults first)
@@ -86,6 +90,25 @@ fun CpuConfigScreen(isRooted: Boolean, onBack: () -> Unit) {
     var globalGovernorSelection by remember { mutableStateOf("—") }
     var commonGovernorOptions by remember { mutableStateOf<List<String>>(emptyList()) }
     var totalCoreCount by remember { mutableStateOf(0) }
+    val supportCount by remember(support) {
+        mutableIntStateOf(
+            listOf(
+                support.eas,
+                support.schedBoost,
+                support.migrate,
+                support.initTaskUtil,
+                support.autoGroup,
+                support.capMarginUp,
+                support.schedutilUpRate,
+                support.interactiveHispeed,
+                support.touchBoost,
+                support.mcSaving,
+                support.powerCollapse,
+                support.thermal
+            ).count { it }
+        )
+    }
+
 
     fun toast(msg: String) = Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
 
@@ -122,17 +145,6 @@ fun CpuConfigScreen(isRooted: Boolean, onBack: () -> Unit) {
         }
     }
 
-    @Composable
-    fun NotSupportedRow(title: String, subtitle: String) {
-        Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
-            Text(text = title, color = styles.titleTextColor.copy(alpha = 0.6f))
-            Spacer(Modifier.height(4.dp))
-            Text(
-                text = "$subtitle • Не підтримується ядром/прошивкою",
-                color = styles.titleTextColor.copy(alpha = 0.55f)
-            )
-        }
-    }
 
     // ----------------------------
     // Initial probe
@@ -273,28 +285,29 @@ fun CpuConfigScreen(isRooted: Boolean, onBack: () -> Unit) {
     // UI
     // ----------------------------
     ConfigScreenLayout(title = "CPU Engineering", styles = styles, onBack = onBack) {
+        if (!isRooted) {
+            StyledBlockCard(styles = styles, title = "LOCKED") {}
+            return@ConfigScreenLayout
+        }
+
+        if (isLoading) {
+            StyledBlockCard(styles = styles, title = "Scanning kernel") {
+                SettingsBadgeRow(
+                    title = "Preparing profile",
+                    subtitle = "Scanning available nodes, CPU topology, and compatible kernel tunables for the current ROM.",
+                    value = "SCANNING",
+                    isRooted = true,
+                    styles = styles
+                )
+            }
+            return@ConfigScreenLayout
+        }
+
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .verticalScroll(scrollState)
                 .padding(bottom = 32.dp)
         ) {
-            if (!isRooted) {
-                StyledBlockCard(styles = styles, title = "LOCKED") {}
-                return@Column
-            }
-
-            if (isLoading) {
-                StyledBlockCard(styles = styles, title = "Scanning kernel") {
-                    SettingsBadgeRow(
-                        title = "Підготовка профілю",
-                        subtitle = "Сканую доступні ноди, кластери та сумісні тюнінги для поточної прошивки.",
-                        value = "SCANNING",
-                        isRooted = true,
-                        styles = styles
-                    )
-                }
-            }
 
             InfoCardUniversal(
                 title = "Kernel runtime profile",
@@ -303,7 +316,7 @@ fun CpuConfigScreen(isRooted: Boolean, onBack: () -> Unit) {
                     "Vendor" to runtimeProfile.vendorFamily,
                     "SoC" to runtimeProfile.socFamily,
                     "Kernel" to runtimeProfile.kernelFlavor,
-                    "Features" to "${listOf(support.eas, support.schedBoost, support.migrate, support.initTaskUtil, support.autoGroup, support.capMarginUp, support.schedutilUpRate, support.interactiveHispeed, support.touchBoost, support.mcSaving, support.powerCollapse, support.thermal).count { it }} / 12",
+                    "Features" to "$supportCount / 12",
                     "Clusters" to clusters.size.toString(),
                     "Hints" to runtimeProfile.hints.joinToString().ifBlank { "—" }
                 ),

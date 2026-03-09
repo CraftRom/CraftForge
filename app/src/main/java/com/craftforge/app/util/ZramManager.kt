@@ -21,6 +21,20 @@ object ZramManager {
 
     private val deviceCandidates = listOf("/dev/block/zram0", "/dev/zram0")
 
+    private fun findActiveSwapDevice(zramDevice: String): Pair<Boolean, Int> {
+        val swaps = RootManager.execRoot("cat /proc/swaps").out
+        val activeLine = swaps.lineSequence()
+            .drop(1)
+            .firstOrNull { it.contains("zram0") || it.contains(zramDevice) }
+        val priority = activeLine
+            ?.trim()
+            ?.split(Regex("\\s+"))
+            ?.lastOrNull()
+            ?.toIntOrNull()
+            ?: 32758
+        return (activeLine != null) to priority
+    }
+
     suspend fun applyCompressionAlgorithm(
         algorithm: String,
         onProgress: suspend (ZramApplyStage, Int) -> Unit = { _, _ -> }
@@ -39,16 +53,7 @@ object ZramManager {
 
         val device = deviceCandidates.firstOrNull { RootManager.nodeExists(it) } ?: "/dev/zram0"
         val disksizeBefore = RootManager.readNode(ZRAM_DISKSIZE_PATH)?.trim()?.toLongOrNull()?.coerceAtLeast(0L) ?: 0L
-        val swaps = RootManager.execRoot("cat /proc/swaps").out
-        val wasSwapActive = swaps.lineSequence().drop(1).any { it.contains("zram0") || it.contains(device) }
-        val swapPriority = swaps.lineSequence()
-            .drop(1)
-            .firstOrNull { it.contains("zram0") || it.contains(device) }
-            ?.trim()
-            ?.split(Regex("\\s+"))
-            ?.lastOrNull()
-            ?.toIntOrNull()
-            ?: 32758
+        val (wasSwapActive, swapPriority) = findActiveSwapDevice(device)
 
         val currentRaw = RootManager.readNode(ZRAM_COMP_PATH, forceRefresh = true).orEmpty()
         val currentAlgo = parseCurrentAlgorithm(currentRaw)
@@ -62,7 +67,10 @@ object ZramManager {
         if (wasSwapActive) {
             report(ZramApplyStage.SWAPOFF, 25)
             val swapoff = RootManager.execRoot("swapoff ${RootManager.shellQuote(device)}", timeoutSec = 20)
-            if (!swapoff.ok) return@withContext swapoff
+            if (!swapoff.ok) {
+                val (stillActive, _) = findActiveSwapDevice(device)
+                if (stillActive) return@withContext swapoff
+            }
         }
 
         report(ZramApplyStage.RESETTING, 45)

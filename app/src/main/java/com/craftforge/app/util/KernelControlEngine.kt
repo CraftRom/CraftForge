@@ -92,8 +92,24 @@ object KernelControlEngine {
     @Volatile private var supportSnapshotCache: SupportSnapshot? = null
     @Volatile private var cpuClusterCache: List<CpuCluster>? = null
     @Volatile private var runtimeProfileCache: RuntimeProfile? = null
+    @Volatile private var lastWarmUpMs: Long = 0L
 
     fun isSupported(key: String): Boolean = !unsupported.contains(key)
+
+    suspend fun warmUpBackgroundScan() = withContext(Dispatchers.IO) {
+        val now = System.currentTimeMillis()
+        if ((now - lastWarmUpMs) < 15_000L && runtimeProfileCache != null && cpuClusterCache != null && supportSnapshotCache != null) {
+            return@withContext
+        }
+        lastWarmUpMs = now
+        coroutineScope {
+            listOf(
+                async { runCatching { getRuntimeProfile(forceRefresh = false) } },
+                async { runCatching { detectCpuClusters(forceRefresh = false) } },
+                async { runCatching { getSupportSnapshot(forceRefresh = false) } }
+            ).awaitAll()
+        }
+    }
 
 
     private fun getProp(name: String): String = runCatching {
@@ -937,7 +953,7 @@ object KernelControlEngine {
             .firstOrNull()
     }
 
-    suspend fun applySavedCpuTweaks(prefs: SharedPreferences): List<WriteResult> = coroutineScope {
+    suspend fun applySavedCpuTweaks(prefs: SharedPreferences, includeCoreOnline: Boolean = false): List<WriteResult> = coroutineScope {
         val results = mutableListOf<WriteResult>()
         val clusters = detectCpuClusters()
         val support = getSupportSnapshot()
@@ -953,9 +969,11 @@ object KernelControlEngine {
                 results += setClusterFreqSafe(cluster, newMinKHz = savedMin, newMaxKHz = savedMax)
             }
 
-            cluster.cores.forEach { core ->
-                prefs.getAnyString("core_${core.id}_online")?.let { raw ->
-                    results += setCoreOnline(core, raw == "1")
+            if (includeCoreOnline) {
+                cluster.cores.forEach { core ->
+                    prefs.getAnyString("core_${core.id}_online")?.let { raw ->
+                        results += setCoreOnline(core, raw == "1")
+                    }
                 }
             }
         }

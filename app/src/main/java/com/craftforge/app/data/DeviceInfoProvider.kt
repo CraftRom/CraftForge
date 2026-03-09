@@ -29,6 +29,7 @@ import android.telephony.TelephonyDisplayInfo
 import android.telephony.TelephonyManager
 import android.view.Display
 import android.view.WindowManager
+import com.craftforge.app.data.models.BatteryData
 import androidx.annotation.RequiresPermission
 import java.io.File
 import java.lang.reflect.Method
@@ -180,6 +181,38 @@ private data class CompatibilityResult(
     val evidence: String
 )
 
+private data class BatteryRealtimeSnapshot(
+    val percent: Int,
+    val status: String,
+    val health: String,
+    val technology: String,
+    val temperatureC: Float,
+    val voltageMv: Int,
+    val currentMa: Int,
+    val powerWatts: Double,
+    val chargingSource: String,
+    val isCharging: Boolean,
+    val isFastCharging: Boolean,
+    val cycleCount: Int,
+    val chargeTimeRemainingMs: Long
+)
+
+private data class ConnectivitySnapshot(
+    val networkOperator: String?,
+    val networkType: String?,
+    val ipv4Address: String,
+    val ipv6Address: String,
+    val wifiLinkSpeedMbps: Int?,
+    val wifiStandard: String?
+)
+
+private data class CpuRuntimeSnapshot(
+    val frequencies: List<Int>,
+    val governor: String?,
+    val temperatureC: Float?,
+    val thermalStatus: String
+)
+
 class DeviceInfoProvider(context: Context) {
     private val appContext = context.applicationContext
     private val activityManager by lazy(LazyThreadSafetyMode.NONE) {
@@ -217,8 +250,56 @@ class DeviceInfoProvider(context: Context) {
         discoverCpuFreqPaths("cpuinfo_max_freq")
     }
 
+    @Volatile
+    private var cachedBatteryIntent: Intent? = null
+    @Volatile
+    private var cachedBatteryIntentAtMs: Long = 0L
+    @Volatile
+    private var cachedBatterySnapshot: BatteryRealtimeSnapshot? = null
+    @Volatile
+    private var cachedBatterySnapshotAtMs: Long = 0L
+    @Volatile
+    private var cachedConnectivitySnapshot: ConnectivitySnapshot? = null
+    @Volatile
+    private var cachedConnectivitySnapshotAtMs: Long = 0L
+    @Volatile
+    private var cachedCpuRuntimeSnapshot: CpuRuntimeSnapshot? = null
+    @Volatile
+    private var cachedCpuRuntimeSnapshotAtMs: Long = 0L
+    @Volatile
+    private var cachedDisplayRefreshRate: Int? = null
+    @Volatile
+    private var cachedDisplayRefreshRateAtMs: Long = 0L
+
+    fun isRootedFast(): Boolean = isDeviceRooted
+
+    fun isLowRamDeviceFast(): Boolean = activityManager.isLowRamDevice
+
+    fun getBatteryDashboardData(): BatteryData {
+        val snapshot = getBatteryRealtimeSnapshot()
+        return BatteryData(
+            levelPercent = snapshot.percent,
+            voltageMv = snapshot.voltageMv,
+            batteryChargePower = snapshot.powerWatts,
+            temperature = snapshot.temperatureC.toInt(),
+            isCharging = snapshot.isCharging
+        )
+    }
+
+    fun warmUpBackgroundCaches() {
+        runCatching { romInfoCache }
+        runCatching { kernelVersionCache }
+        runCatching { cameraSummaryCache }
+        runCatching { widevineInfoCache }
+        runCatching { getBatteryRealtimeSnapshot(maxAgeMs = 0L) }
+        runCatching { getConnectivitySnapshot(maxAgeMs = 0L) }
+        runCatching { getCpuRuntimeSnapshot(maxAgeMs = 0L) }
+        runCatching { getDisplayRefreshRateCached(maxAgeMs = 0L) }
+    }
+
     @RequiresPermission(Manifest.permission.READ_PHONE_STATE)
     fun getStaticDeviceInfo(): StaticDeviceInfo {
+
         val gpu = getGpuInfo()
         val displayInfo = getDisplayDetails()
         val romInfo = romInfoCache
@@ -307,9 +388,61 @@ class DeviceInfoProvider(context: Context) {
 
     @RequiresPermission(Manifest.permission.READ_PHONE_STATE)
     fun getDynamicDeviceInfo(): DynamicDeviceInfo {
-        val batteryManager = appContext.getSystemService(Context.BATTERY_SERVICE) as BatteryManager
-        val batteryIntent = appContext.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+        val battery = getBatteryRealtimeSnapshot()
+        val connectivity = getConnectivitySnapshot()
+        val cpuRuntime = getCpuRuntimeSnapshot()
 
+        return DynamicDeviceInfo(
+            ramUsedMb = getUsedRamMb(),
+            ramFreeMb = getFreeRamMb(),
+            internalFreeGb = getInternalFreeGb(),
+            batteryPercent = battery.percent,
+            batteryStatus = battery.status,
+            batteryHealth = battery.health,
+            batteryTechnology = battery.technology,
+            batteryTemperatureC = battery.temperatureC,
+            batteryVoltageMv = battery.voltageMv,
+            batteryCurrentMa = battery.currentMa,
+            batteryPowerWatts = battery.powerWatts,
+            chargingSource = battery.chargingSource,
+            isCharging = battery.isCharging,
+            isFastCharging = battery.isFastCharging,
+            batteryCycleCount = battery.cycleCount,
+            chargeTimeRemainingMs = battery.chargeTimeRemainingMs,
+            networkOperator = connectivity.networkOperator,
+            networkType = connectivity.networkType,
+            ipv4Address = connectivity.ipv4Address,
+            ipv6Address = connectivity.ipv6Address,
+            displayRefreshRate = getDisplayRefreshRateCached(),
+            wifiLinkSpeedMbps = connectivity.wifiLinkSpeedMbps,
+            wifiStandard = connectivity.wifiStandard,
+            cpuFrequencies = cpuRuntime.frequencies,
+            cpuGovernor = cpuRuntime.governor,
+            cpuTemperatureC = cpuRuntime.temperatureC,
+            thermalThrottlingStatus = cpuRuntime.thermalStatus,
+            systemUptimeMs = SystemClock.elapsedRealtime()
+        )
+    }
+
+    private fun getBatteryIntentCached(maxAgeMs: Long = 1_500L): Intent? {
+        val now = SystemClock.elapsedRealtime()
+        val cached = cachedBatteryIntent
+        if (cached != null && now - cachedBatteryIntentAtMs <= maxAgeMs) return cached
+
+        val fresh = runCatching {
+            appContext.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+        }.getOrNull()
+        cachedBatteryIntent = fresh
+        cachedBatteryIntentAtMs = now
+        return fresh
+    }
+
+    private fun getBatteryRealtimeSnapshot(maxAgeMs: Long = 1_500L): BatteryRealtimeSnapshot {
+        val now = SystemClock.elapsedRealtime()
+        cachedBatterySnapshot?.let { if (now - cachedBatterySnapshotAtMs <= maxAgeMs) return it }
+
+        val batteryManager = appContext.getSystemService(Context.BATTERY_SERVICE) as BatteryManager
+        val batteryIntent = getBatteryIntentCached(maxAgeMs = maxAgeMs)
         val batteryPercent = batteryManager.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
             .takeIf { it in 0..100 } ?: -1
         val batteryVoltageMv = batteryIntent?.getIntExtra(BatteryManager.EXTRA_VOLTAGE, -1) ?: -1
@@ -353,38 +486,66 @@ class DeviceInfoProvider(context: Context) {
             0.0
         }
 
-        val (ipv4Address, ipv6Address) = getNetworkIpAddresses()
-
-        return DynamicDeviceInfo(
-            ramUsedMb = getUsedRamMb(),
-            ramFreeMb = getFreeRamMb(),
-            internalFreeGb = getInternalFreeGb(),
-            batteryPercent = batteryPercent,
-            batteryStatus = batteryStatus,
-            batteryHealth = batteryHealth,
-            batteryTechnology = batteryTechnology,
-            batteryTemperatureC = batteryTemperatureC,
-            batteryVoltageMv = batteryVoltageMv,
-            batteryCurrentMa = batteryCurrentMa,
-            batteryPowerWatts = batteryPowerWatts,
+        return BatteryRealtimeSnapshot(
+            percent = batteryPercent,
+            status = batteryStatus,
+            health = batteryHealth,
+            technology = batteryTechnology,
+            temperatureC = batteryTemperatureC,
+            voltageMv = batteryVoltageMv,
+            currentMa = batteryCurrentMa,
+            powerWatts = batteryPowerWatts,
             chargingSource = chargingSource,
             isCharging = isCharging,
             isFastCharging = batteryPowerWatts >= 10.0,
-            batteryCycleCount = getBatteryCycleCount(batteryManager, batteryIntent) ?: -1,
-            chargeTimeRemainingMs = getChargeTimeRemainingCompat(batteryManager),
+            cycleCount = getBatteryCycleCount(batteryManager, batteryIntent) ?: -1,
+            chargeTimeRemainingMs = getChargeTimeRemainingCompat(batteryManager)
+        ).also {
+            cachedBatterySnapshot = it
+            cachedBatterySnapshotAtMs = now
+        }
+    }
+
+    private fun getConnectivitySnapshot(maxAgeMs: Long = 4_500L): ConnectivitySnapshot {
+        val now = SystemClock.elapsedRealtime()
+        cachedConnectivitySnapshot?.let { if (now - cachedConnectivitySnapshotAtMs <= maxAgeMs) return it }
+
+        val (ipv4Address, ipv6Address) = getNetworkIpAddresses()
+        return ConnectivitySnapshot(
             networkOperator = getNetworkOperatorName(),
             networkType = getReadableNetworkType(),
             ipv4Address = ipv4Address,
             ipv6Address = ipv6Address,
-            displayRefreshRate = getDisplayRefreshRate(),
             wifiLinkSpeedMbps = getWifiSpeed(),
-            wifiStandard = getWifiStandard(),
-            cpuFrequencies = getCpuFrequencies(),
-            cpuGovernor = getCpuGovernor(),
-            cpuTemperatureC = getCpuTemperature(),
-            thermalThrottlingStatus = getThermalStatus(),
-            systemUptimeMs = SystemClock.elapsedRealtime()
-        )
+            wifiStandard = getWifiStandard()
+        ).also {
+            cachedConnectivitySnapshot = it
+            cachedConnectivitySnapshotAtMs = now
+        }
+    }
+
+    private fun getCpuRuntimeSnapshot(maxAgeMs: Long = 1_500L): CpuRuntimeSnapshot {
+        val now = SystemClock.elapsedRealtime()
+        cachedCpuRuntimeSnapshot?.let { if (now - cachedCpuRuntimeSnapshotAtMs <= maxAgeMs) return it }
+
+        return CpuRuntimeSnapshot(
+            frequencies = getCpuFrequencies(),
+            governor = getCpuGovernor(),
+            temperatureC = getCpuTemperature(),
+            thermalStatus = getThermalStatus()
+        ).also {
+            cachedCpuRuntimeSnapshot = it
+            cachedCpuRuntimeSnapshotAtMs = now
+        }
+    }
+
+    private fun getDisplayRefreshRateCached(maxAgeMs: Long = 3_000L): Int {
+        val now = SystemClock.elapsedRealtime()
+        cachedDisplayRefreshRate?.let { if (now - cachedDisplayRefreshRateAtMs <= maxAgeMs) return it }
+        return getDisplayRefreshRate().also {
+            cachedDisplayRefreshRate = it
+            cachedDisplayRefreshRateAtMs = now
+        }
     }
 
     private fun getSocManufacturerCompat(): String =
@@ -851,12 +1012,6 @@ class DeviceInfoProvider(context: Context) {
         return 0
     }
 
-    private val networkTypeLteCaCompat: Int? by lazy(LazyThreadSafetyMode.NONE) {
-        runCatching {
-            TelephonyManager::class.java.getField("NETWORK_TYPE_LTE_CA").getInt(null)
-        }.getOrNull()
-    }
-
     private fun getBatteryCycleCount(bm: BatteryManager, batteryIntent: Intent? = null): Int? =
         getBatteryCycleCountCompat(bm, batteryIntent)
 
@@ -926,9 +1081,6 @@ class DeviceInfoProvider(context: Context) {
         return when {
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.R &&
                 overrideNetworkType == TelephonyDisplayInfo.OVERRIDE_NETWORK_TYPE_LTE_CA -> "LTE CA"
-
-            networkTypeLteCaCompat != null && networkType == networkTypeLteCaCompat -> "LTE CA"
-
             else -> mapNetworkTypeCompat(networkType)
         }
     }

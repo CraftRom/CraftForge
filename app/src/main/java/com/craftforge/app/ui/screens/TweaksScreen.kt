@@ -23,6 +23,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.craftforge.app.R
 import com.craftforge.app.data.DeviceInfoProvider
+import com.craftforge.app.util.KernelControlEngine
 import com.craftforge.app.service.TweaksService
 import com.craftforge.app.ui.theme.*
 import kotlinx.coroutines.Dispatchers
@@ -40,11 +41,19 @@ fun TweaksScreen() {
     var isRooted by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
-        withContext(Dispatchers.IO) {
+        val rooted = withContext(Dispatchers.IO) {
             val provider = DeviceInfoProvider(context)
-            @Suppress("MissingPermission")
-            isRooted = provider.getStaticDeviceInfo().isRooted
+            val result = provider.isRootedFast()
+            provider.warmUpBackgroundCaches()
+            if (result) {
+                try {
+                    KernelControlEngine.warmUpBackgroundScan()
+                } catch (_: Throwable) {
+                }
+            }
+            result
         }
+        isRooted = rooted
     }
 
     BackHandler(enabled = currentRoute != TweaksRoute.MAIN) {

@@ -29,6 +29,14 @@ object RootManager {
     private val writableCache = ConcurrentHashMap<String, Boolean>()
     private val readCache = ConcurrentHashMap<String, String>()
 
+    private const val CACHE_LIMIT = 512
+
+    private fun <K, V> cachePut(map: ConcurrentHashMap<K, V>, key: K, value: V) {
+        if (map.size >= CACHE_LIMIT) map.clear()
+        map[key] = value
+    }
+
+
     private val suCandidates = listOf(
         "su",
         "/system/bin/su",
@@ -150,12 +158,12 @@ object RootManager {
 
         val direct = runCatching { File(path).exists() }.getOrDefault(false)
         if (direct) {
-            existsCache[path] = true
+            cachePut(existsCache, path, true)
             return true
         }
 
         val ok = execRoot("[ -e ${shQuote(path)} ] && echo 1 || echo 0").out == "1"
-        existsCache[path] = ok
+        cachePut(existsCache, path, ok)
         return ok
     }
 
@@ -167,14 +175,14 @@ object RootManager {
         val file = File(path)
         val directWritable = runCatching { file.exists() && file.canWrite() }.getOrDefault(false)
         if (directWritable) {
-            existsCache[path] = true
-            writableCache[path] = true
+            cachePut(existsCache, path, true)
+            cachePut(writableCache, path, true)
             return true
         }
 
         val ok = execRoot("[ -w ${shQuote(path)} ] && echo 1 || echo 0").out == "1"
-        existsCache[path] = existsCache[path] ?: ok
-        writableCache[path] = ok
+        cachePut(existsCache, path, existsCache[path] ?: ok)
+        cachePut(writableCache, path, ok)
         return ok
     }
 
@@ -190,13 +198,13 @@ object RootManager {
         }.getOrNull()
 
         if (direct != null) {
-            readCache[path] = direct.ifEmpty { NULL_SENTINEL }
+            cachePut(readCache, path, direct.ifEmpty { NULL_SENTINEL })
             return direct
         }
 
         val r = execRoot("cat ${shQuote(path)}")
         val value = if (r.ok) r.out.trim().ifEmpty { null } else null
-        readCache[path] = value ?: NULL_SENTINEL
+        cachePut(readCache, path, value ?: NULL_SENTINEL)
         return value
     }
 
