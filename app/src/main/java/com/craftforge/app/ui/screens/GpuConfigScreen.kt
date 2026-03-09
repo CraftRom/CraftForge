@@ -139,70 +139,77 @@ fun GpuConfigScreen(isRooted: Boolean, onBack: () -> Unit) {
             }
 
             // --- СЕКЦІЯ 1: ПРОФІЛЬ ТА ЧАСТОТИ ---
-            StyledBlockCard(styles = styles, title = "Graphics Engine") {
-                SettingsDropdownRow(
-                    title = "GPU Governor",
-                    subtitle = "Optimizes Adreno rendering performance.",
-                    currentValue = currentGov,
-                    availableValues = availableGovs,
-                    isRooted = isRooted,
-                    styles = styles,
-                    onValueSelected = { selected ->
-                        currentGov = selected
-                        scope.launch(Dispatchers.IO) {
-                            RootManager.executeRootCommand("echo $selected > $devfreqPath/governor")
-                            prefs.edit().putString("saved_gpu_governor", selected).apply()
-                            withContext(Dispatchers.Main) { Toast.makeText(context, "GPU Governor: $selected", Toast.LENGTH_SHORT).show() }
-                        }
+            val showGraphicsSection = (availableGovs.isNotEmpty() || availableFreqsDisplay.isNotEmpty()) || !isRooted
+            if (showGraphicsSection) {
+                StyledBlockCard(styles = styles, title = "Graphics Engine") {
+                    var rowShown = false
+
+                    if (availableGovs.isNotEmpty() || !isRooted) {
+                        SettingsDropdownRow(
+                            title = "GPU Governor",
+                            subtitle = "Optimizes Adreno rendering performance.",
+                            currentValue = currentGov,
+                            availableValues = availableGovs,
+                            isRooted = isRooted,
+                            styles = styles,
+                            onValueSelected = { selected ->
+                                currentGov = selected
+                                scope.launch(Dispatchers.IO) {
+                                    RootManager.executeRootCommand("echo $selected > $devfreqPath/governor")
+                                    prefs.edit().putString("saved_gpu_governor", selected).apply()
+                                    withContext(Dispatchers.Main) { Toast.makeText(context, "GPU Governor: $selected", Toast.LENGTH_SHORT).show() }
+                                }
+                            }
+                        )
+                        rowShown = true
                     }
-                )
 
-                if (availableFreqsDisplay.isNotEmpty()) {
-                    HorizontalDivider(color = styles.titleTextColor.copy(alpha = 0.05f), modifier = Modifier.padding(horizontal = 16.dp))
-
-                    SettingsDropdownRow(
-                        title = "Max Frequency",
-                        subtitle = "Cap maximum 3D performance to save battery.",
-                        currentValue = currentMaxFreq,
-                        availableValues = availableFreqsDisplay,
-                        isRooted = isRooted,
-                        styles = styles,
-                        onValueSelected = { selectedDisplay ->
-                            currentMaxFreq = selectedDisplay
-                            val rawHz = (selectedDisplay.replace(" MHz", "").toLongOrNull() ?: 0L) * 1000000
-                            if (rawHz > 0) {
-                                scope.launch(Dispatchers.IO) {
-                                    RootManager.executeRootCommand("echo $rawHz > $devfreqPath/max_freq")
-                                    prefs.edit().putString("saved_gpu_max_freq", rawHz.toString()).apply()
+                    if (availableFreqsDisplay.isNotEmpty()) {
+                        if (rowShown) HorizontalDivider(color = styles.titleTextColor.copy(alpha = 0.05f), modifier = Modifier.padding(horizontal = 16.dp))
+                        SettingsDropdownRow(
+                            title = "Max Frequency",
+                            subtitle = "Cap maximum 3D performance to save battery.",
+                            currentValue = currentMaxFreq,
+                            availableValues = availableFreqsDisplay,
+                            isRooted = isRooted,
+                            styles = styles,
+                            onValueSelected = { selectedDisplay ->
+                                currentMaxFreq = selectedDisplay
+                                val rawHz = (selectedDisplay.replace(" MHz", "").toLongOrNull() ?: 0L) * 1000000
+                                if (rawHz > 0) {
+                                    scope.launch(Dispatchers.IO) {
+                                        RootManager.executeRootCommand("echo $rawHz > $devfreqPath/max_freq")
+                                        prefs.edit().putString("saved_gpu_max_freq", rawHz.toString()).apply()
+                                    }
                                 }
                             }
-                        }
-                    )
+                        )
 
-                    HorizontalDivider(color = styles.titleTextColor.copy(alpha = 0.05f), modifier = Modifier.padding(horizontal = 16.dp))
+                        HorizontalDivider(color = styles.titleTextColor.copy(alpha = 0.05f), modifier = Modifier.padding(horizontal = 16.dp))
 
-                    SettingsDropdownRow(
-                        title = "Min Frequency",
-                        subtitle = "Raise base frequency to eliminate UI stuttering.",
-                        currentValue = currentMinFreq,
-                        availableValues = availableFreqsDisplay,
-                        isRooted = isRooted,
-                        styles = styles,
-                        onValueSelected = { selectedDisplay ->
-                            currentMinFreq = selectedDisplay
-                            val rawHz = (selectedDisplay.replace(" MHz", "").toLongOrNull() ?: 0L) * 1000000
-                            if (rawHz > 0) {
-                                scope.launch(Dispatchers.IO) {
-                                    RootManager.executeRootCommand("echo $rawHz > $devfreqPath/min_freq")
-                                    prefs.edit().putString("saved_gpu_min_freq", rawHz.toString()).apply()
+                        SettingsDropdownRow(
+                            title = "Min Frequency",
+                            subtitle = "Raise base frequency to eliminate UI stuttering.",
+                            currentValue = currentMinFreq,
+                            availableValues = availableFreqsDisplay,
+                            isRooted = isRooted,
+                            styles = styles,
+                            onValueSelected = { selectedDisplay ->
+                                currentMinFreq = selectedDisplay
+                                val rawHz = (selectedDisplay.replace(" MHz", "").toLongOrNull() ?: 0L) * 1000000
+                                if (rawHz > 0) {
+                                    scope.launch(Dispatchers.IO) {
+                                        RootManager.executeRootCommand("echo $rawHz > $devfreqPath/min_freq")
+                                        prefs.edit().putString("saved_gpu_min_freq", rawHz.toString()).apply()
+                                    }
                                 }
                             }
-                        }
-                    )
+                        )
+                    }
                 }
-            }
 
-            Spacer(modifier = Modifier.height(12.dp))
+                Spacer(modifier = Modifier.height(12.dp))
+            }
 
             // --- СЕКЦІЯ 2: POWER & IDLE (Динамічна) ---
             val showIdleSection = isAdrenoIdlerSupported || isIdleTimerSupported

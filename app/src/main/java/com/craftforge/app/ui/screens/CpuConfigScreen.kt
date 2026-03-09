@@ -456,30 +456,33 @@ fun CpuConfigScreen(isRooted: Boolean, onBack: () -> Unit) {
                         )
                     }
 
-                    HorizontalDivider(color = styles.titleTextColor.copy(alpha = 0.05f), modifier = Modifier.padding(horizontal = 16.dp))
+                    val togglableCores = cluster.cores.filter { it.onlinePath != null }
+                    if (togglableCores.isNotEmpty()) {
+                        HorizontalDivider(color = styles.titleTextColor.copy(alpha = 0.05f), modifier = Modifier.padding(horizontal = 16.dp))
 
-                    cluster.cores.forEach { core ->
-                        val online = coreOnline[core.id] ?: true
-                        SettingsSwitchRow(
-                            title = "Core ${core.id}",
-                            subtitle = "Вмик/вимик ядра CPU. Деякі ядра (особливо cpu0) не можна вимкнути.",
-                            checked = online,
-                            styles = styles,
-                            onCheckedChange = { enabled ->
-                                val old = coreOnline[core.id] ?: online
-                                coreOnline[core.id] = enabled
+                        togglableCores.forEach { core ->
+                            val online = coreOnline[core.id] ?: true
+                            SettingsSwitchRow(
+                                title = "Core ${core.id}",
+                                subtitle = "Вмик/вимик ядра CPU. Деякі ядра (особливо cpu0) не можна вимкнути.",
+                                checked = online,
+                                styles = styles,
+                                onCheckedChange = { enabled ->
+                                    val old = coreOnline[core.id] ?: online
+                                    coreOnline[core.id] = enabled
 
-                                scope.launch(Dispatchers.IO) {
-                                    val r = KernelControlEngine.setCoreOnline(core, enabled)
-                                    if (r.ok) {
-                                        prefs.edit().putString("core_${core.id}_online", if (enabled) "1" else "0").apply()
-                                    } else {
-                                        coreOnline[core.id] = old
-                                        withContext(Dispatchers.Main) { toast("Core ${core.id}: ${r.short()}") }
+                                    scope.launch(Dispatchers.IO) {
+                                        val r = KernelControlEngine.setCoreOnline(core, enabled)
+                                        if (r.ok) {
+                                            prefs.edit().putString("core_${core.id}_online", if (enabled) "1" else "0").apply()
+                                        } else {
+                                            coreOnline[core.id] = old
+                                            withContext(Dispatchers.Main) { toast("Core ${core.id}: ${r.short()}") }
+                                        }
                                     }
                                 }
-                            }
-                        )
+                            )
+                        }
                     }
                 }
 
@@ -489,382 +492,368 @@ fun CpuConfigScreen(isRooted: Boolean, onBack: () -> Unit) {
             // =================================================
             // SECTION 2: EAS / Scheduler
             // =================================================
-            StyledBlockCard(styles = styles, title = "Scheduler (планувальник задач)") {
+            val showSchedulerSection = support.eas || support.schedBoost || support.migrate || support.initTaskUtil || support.autoGroup || support.capMarginUp
+            if (showSchedulerSection) {
+                StyledBlockCard(styles = styles, title = "Scheduler (планувальник задач)") {
+                    var schedulerRowShown = false
 
-                if (!support.eas) {
-                    NotSupportedRow("Enable EAS", "Енерго-орієнтований планувальник (EAS)")
-                } else {
-                    SettingsSwitchRow(
-                        title = "Enable EAS",
-                        subtitle = "Розподіляє навантаження по ядрах з акцентом на економію. Часто добре для батареї.",
-                        checked = isEasEnabled,
-                        styles = styles,
-                        onCheckedChange = { checked ->
-                            val old = isEasEnabled
-                            isEasEnabled = checked
-                            scope.launch(Dispatchers.IO) {
-                                val r = KernelControlEngine.setEasEnabled(checked)
-                                if (r.ok) {
-                                    prefs.edit().putString("saved_eas_enable", if (checked) "1" else "0").apply()
-                                } else {
-                                    isEasEnabled = old
-                                    withContext(Dispatchers.Main) { toast("EAS: ${r.short()}") }
+                    if (support.eas) {
+                        SettingsSwitchRow(
+                            title = "Enable EAS",
+                            subtitle = "Розподіляє навантаження по ядрах з акцентом на економію. Часто добре для батареї.",
+                            checked = isEasEnabled,
+                            styles = styles,
+                            onCheckedChange = { checked ->
+                                val old = isEasEnabled
+                                isEasEnabled = checked
+                                scope.launch(Dispatchers.IO) {
+                                    val r = KernelControlEngine.setEasEnabled(checked)
+                                    if (r.ok) {
+                                        prefs.edit().putString("saved_eas_enable", if (checked) "1" else "0").apply()
+                                    } else {
+                                        isEasEnabled = old
+                                        withContext(Dispatchers.Main) { toast("EAS: ${r.short()}") }
+                                    }
                                 }
                             }
-                        }
-                    )
-                }
+                        )
+                        schedulerRowShown = true
+                    }
 
-                HorizontalDivider(color = styles.titleTextColor.copy(alpha = 0.05f), modifier = Modifier.padding(horizontal = 16.dp))
+                    if (support.schedBoost) {
+                        if (schedulerRowShown) HorizontalDivider(color = styles.titleTextColor.copy(alpha = 0.05f), modifier = Modifier.padding(horizontal = 16.dp))
+                        SettingsDropdownRow(
+                            title = "Scheduler Boost",
+                            subtitle = "Підвищує пріоритет/швидкість реакції системи. Вище = швидше, але більше витрат.",
+                            currentValue = displayFromRawBoost(currentSchedBoost),
+                            availableValues = schedBoostLevels,
+                            isRooted = true,
+                            styles = styles,
+                            onValueSelected = { selected ->
+                                val raw = selected.substringBefore(" ").trim()
+                                val old = currentSchedBoost
+                                currentSchedBoost = raw
 
-                if (!support.schedBoost) {
-                    NotSupportedRow("Scheduler Boost", "Підсилення реактивності планувальника")
-                } else {
-                    SettingsDropdownRow(
-                        title = "Scheduler Boost",
-                        subtitle = "Підвищує пріоритет/швидкість реакції системи. Вище = швидше, але більше витрат.",
-                        currentValue = displayFromRawBoost(currentSchedBoost),
-                        availableValues = schedBoostLevels,
-                        isRooted = true,
-                        styles = styles,
-                        onValueSelected = { selected ->
-                            val raw = selected.substringBefore(" ").trim()
-                            val old = currentSchedBoost
-                            currentSchedBoost = raw
-
-                            scope.launch(Dispatchers.IO) {
-                                val r = KernelControlEngine.setSchedBoost(raw)
-                                if (r.ok) {
-                                    prefs.edit().putString("saved_sched_boost", raw).apply()
-                                } else {
-                                    currentSchedBoost = old
-                                    withContext(Dispatchers.Main) { toast("sched_boost: ${r.short()}") }
+                                scope.launch(Dispatchers.IO) {
+                                    val r = KernelControlEngine.setSchedBoost(raw)
+                                    if (r.ok) {
+                                        prefs.edit().putString("saved_sched_boost", raw).apply()
+                                    } else {
+                                        currentSchedBoost = old
+                                        withContext(Dispatchers.Main) { toast("sched_boost: ${r.short()}") }
+                                    }
                                 }
                             }
-                        }
-                    )
-                }
+                        )
+                        schedulerRowShown = true
+                    }
 
-                HorizontalDivider(color = styles.titleTextColor.copy(alpha = 0.05f), modifier = Modifier.padding(horizontal = 16.dp))
+                    if (support.migrate) {
+                        if (schedulerRowShown) HorizontalDivider(color = styles.titleTextColor.copy(alpha = 0.05f), modifier = Modifier.padding(horizontal = 16.dp))
+                        SettingsDropdownRow(
+                            title = "Up/Down Migrate",
+                            subtitle = "Коли таски перекидаються на “сильні” ядра і назад. Нижче пороги = агресивніша продуктивність.",
+                            currentValue = currentMigrateDisplay,
+                            availableValues = migrateLevels,
+                            isRooted = true,
+                            styles = styles,
+                            onValueSelected = { selected ->
+                                val raw = selected.substringBefore(" (").trim()
+                                val parts = raw.split(" ").filter { it.isNotBlank() }
+                                if (parts.size < 2) return@SettingsDropdownRow
+                                val up = parts[0]
+                                val down = parts[1]
 
-                if (!support.migrate) {
-                    NotSupportedRow("Up/Down Migrate", "Пороги міграції між кластерами")
-                } else {
-                    SettingsDropdownRow(
-                        title = "Up/Down Migrate",
-                        subtitle = "Коли таски перекидаються на “сильні” ядра і назад. Нижче пороги = агресивніша продуктивність.",
-                        currentValue = currentMigrateDisplay,
-                        availableValues = migrateLevels,
-                        isRooted = true,
-                        styles = styles,
-                        onValueSelected = { selected ->
-                            val raw = selected.substringBefore(" (").trim()
-                            val parts = raw.split(" ").filter { it.isNotBlank() }
-                            if (parts.size < 2) return@SettingsDropdownRow
-                            val up = parts[0]
-                            val down = parts[1]
+                                val oldUp = currentUpMigrate
+                                val oldDown = currentDownMigrate
+                                val oldDisplay = currentMigrateDisplay
 
-                            val oldUp = currentUpMigrate
-                            val oldDown = currentDownMigrate
-                            val oldDisplay = currentMigrateDisplay
+                                currentUpMigrate = up
+                                currentDownMigrate = down
+                                currentMigrateDisplay = displayFromRawMigrate(up, down)
 
-                            currentUpMigrate = up
-                            currentDownMigrate = down
-                            currentMigrateDisplay = displayFromRawMigrate(up, down)
+                                scope.launch(Dispatchers.IO) {
+                                    val r1 = KernelControlEngine.setUpMigrate(up)
+                                    val r2 = KernelControlEngine.setDownMigrate(down)
 
-                            scope.launch(Dispatchers.IO) {
-                                val r1 = KernelControlEngine.setUpMigrate(up)
-                                val r2 = KernelControlEngine.setDownMigrate(down)
-
-                                if (r1.ok && r2.ok) {
-                                    prefs.edit().putString("saved_up_migrate", up).putString("saved_down_migrate", down).apply()
-                                } else {
-                                    currentUpMigrate = oldUp
-                                    currentDownMigrate = oldDown
-                                    currentMigrateDisplay = oldDisplay
-                                    withContext(Dispatchers.Main) { toast("migrate: ${if (!r1.ok) r1.short() else r2.short()}") }
+                                    if (r1.ok && r2.ok) {
+                                        prefs.edit().putString("saved_up_migrate", up).putString("saved_down_migrate", down).apply()
+                                    } else {
+                                        currentUpMigrate = oldUp
+                                        currentDownMigrate = oldDown
+                                        currentMigrateDisplay = oldDisplay
+                                        withContext(Dispatchers.Main) { toast("migrate: ${if (!r1.ok) r1.short() else r2.short()}") }
+                                    }
                                 }
                             }
-                        }
-                    )
-                }
+                        )
+                        schedulerRowShown = true
+                    }
 
-                HorizontalDivider(color = styles.titleTextColor.copy(alpha = 0.05f), modifier = Modifier.padding(horizontal = 16.dp))
+                    if (support.initTaskUtil) {
+                        if (schedulerRowShown) HorizontalDivider(color = styles.titleTextColor.copy(alpha = 0.05f), modifier = Modifier.padding(horizontal = 16.dp))
+                        SettingsDropdownRow(
+                            title = "Initial Task Util",
+                            subtitle = "Наскільки “важкою” планувальник вважає нову задачу. Вище = швидше розганяє CPU.",
+                            currentValue = currentInitTaskUtilDisplay,
+                            availableValues = initUtilLevels,
+                            isRooted = true,
+                            styles = styles,
+                            onValueSelected = { selected ->
+                                val raw = selected.substringBefore(" ").trim()
+                                val oldRaw = currentInitTaskUtilRaw
+                                val oldDisplay = currentInitTaskUtilDisplay
 
-                if (!support.initTaskUtil) {
-                    NotSupportedRow("Initial Task Util", "Стартова “вага” нових задач")
-                } else {
-                    SettingsDropdownRow(
-                        title = "Initial Task Util",
-                        subtitle = "Наскільки “важкою” планувальник вважає нову задачу. Вище = швидше розганяє CPU.",
-                        currentValue = currentInitTaskUtilDisplay,
-                        availableValues = initUtilLevels,
-                        isRooted = true,
-                        styles = styles,
-                        onValueSelected = { selected ->
-                            val raw = selected.substringBefore(" ").trim()
-                            val oldRaw = currentInitTaskUtilRaw
-                            val oldDisplay = currentInitTaskUtilDisplay
+                                currentInitTaskUtilRaw = raw
+                                currentInitTaskUtilDisplay = displayFromRawInit(raw)
 
-                            currentInitTaskUtilRaw = raw
-                            currentInitTaskUtilDisplay = displayFromRawInit(raw)
-
-                            scope.launch(Dispatchers.IO) {
-                                val r = KernelControlEngine.setInitTaskUtil(raw)
-                                if (r.ok) {
-                                    prefs.edit().putString("saved_init_task_util_raw", raw).apply()
-                                } else {
-                                    currentInitTaskUtilRaw = oldRaw
-                                    currentInitTaskUtilDisplay = oldDisplay
-                                    withContext(Dispatchers.Main) { toast("init_task_util: ${r.short()}") }
+                                scope.launch(Dispatchers.IO) {
+                                    val r = KernelControlEngine.setInitTaskUtil(raw)
+                                    if (r.ok) {
+                                        prefs.edit().putString("saved_init_task_util_raw", raw).apply()
+                                    } else {
+                                        currentInitTaskUtilRaw = oldRaw
+                                        currentInitTaskUtilDisplay = oldDisplay
+                                        withContext(Dispatchers.Main) { toast("init_task_util: ${r.short()}") }
+                                    }
                                 }
                             }
-                        }
-                    )
-                }
+                        )
+                        schedulerRowShown = true
+                    }
 
-                HorizontalDivider(color = styles.titleTextColor.copy(alpha = 0.05f), modifier = Modifier.padding(horizontal = 16.dp))
+                    if (support.autoGroup) {
+                        if (schedulerRowShown) HorizontalDivider(color = styles.titleTextColor.copy(alpha = 0.05f), modifier = Modifier.padding(horizontal = 16.dp))
+                        SettingsSwitchRow(
+                            title = "Autogroup",
+                            subtitle = "Покращує чуйність UI, групуючи процеси. Іноді може впливати на “ровність” навантаження.",
+                            checked = isAutoGroupEnabled,
+                            styles = styles,
+                            onCheckedChange = { checked ->
+                                val old = isAutoGroupEnabled
+                                isAutoGroupEnabled = checked
 
-                if (!support.autoGroup) {
-                    NotSupportedRow("Autogroup", "Групування задач для інтерфейсу")
-                } else {
-                    SettingsSwitchRow(
-                        title = "Autogroup",
-                        subtitle = "Покращує чуйність UI, групуючи процеси. Іноді може впливати на “ровність” навантаження.",
-                        checked = isAutoGroupEnabled,
-                        styles = styles,
-                        onCheckedChange = { checked ->
-                            val old = isAutoGroupEnabled
-                            isAutoGroupEnabled = checked
-
-                            scope.launch(Dispatchers.IO) {
-                                val r = KernelControlEngine.setAutoGroup(checked)
-                                if (r.ok) {
-                                    prefs.edit().putString("saved_autogroup", if (checked) "1" else "0").apply()
-                                } else {
-                                    isAutoGroupEnabled = old
-                                    withContext(Dispatchers.Main) { toast("autogroup: ${r.short()}") }
+                                scope.launch(Dispatchers.IO) {
+                                    val r = KernelControlEngine.setAutoGroup(checked)
+                                    if (r.ok) {
+                                        prefs.edit().putString("saved_autogroup", if (checked) "1" else "0").apply()
+                                    } else {
+                                        isAutoGroupEnabled = old
+                                        withContext(Dispatchers.Main) { toast("autogroup: ${r.short()}") }
+                                    }
                                 }
                             }
-                        }
-                    )
-                }
+                        )
+                        schedulerRowShown = true
+                    }
 
-                HorizontalDivider(color = styles.titleTextColor.copy(alpha = 0.05f), modifier = Modifier.padding(horizontal = 16.dp))
+                    if (support.capMarginUp) {
+                        if (schedulerRowShown) HorizontalDivider(color = styles.titleTextColor.copy(alpha = 0.05f), modifier = Modifier.padding(horizontal = 16.dp))
+                        SettingsDropdownRow(
+                            title = "Capacity Margin (Up)",
+                            subtitle = "Додає “запас” при вирішенні, коли буститись. Вище = агресивніша продуктивність.",
+                            currentValue = displayFromRawCapacity(currentCapacityMarginRaw.ifBlank { "—" }),
+                            availableValues = capacityMarginLevels,
+                            isRooted = true,
+                            styles = styles,
+                            onValueSelected = { selected ->
+                                val raw = selected.substringBefore(" ").trim()
+                                val old = currentCapacityMarginRaw
+                                currentCapacityMarginRaw = raw
 
-                if (!support.capMarginUp) {
-                    NotSupportedRow("Capacity Margin (Up)", "Запас потужності для бусту")
-                } else {
-                    SettingsDropdownRow(
-                        title = "Capacity Margin (Up)",
-                        subtitle = "Додає “запас” при вирішенні, коли буститись. Вище = агресивніша продуктивність.",
-                        currentValue = displayFromRawCapacity(currentCapacityMarginRaw.ifBlank { "—" }),
-                        availableValues = capacityMarginLevels,
-                        isRooted = true,
-                        styles = styles,
-                        onValueSelected = { selected ->
-                            val raw = selected.substringBefore(" ").trim()
-                            val old = currentCapacityMarginRaw
-                            currentCapacityMarginRaw = raw
-
-                            scope.launch(Dispatchers.IO) {
-                                val r = KernelControlEngine.setCapacityMargin(raw)
-                                if (r.ok) {
-                                    prefs.edit().putString("saved_capacity_margin", raw).apply()
-                                } else {
-                                    currentCapacityMarginRaw = old
-                                    withContext(Dispatchers.Main) { toast("capacity_margin: ${r.short()}") }
+                                scope.launch(Dispatchers.IO) {
+                                    val r = KernelControlEngine.setCapacityMargin(raw)
+                                    if (r.ok) {
+                                        prefs.edit().putString("saved_capacity_margin", raw).apply()
+                                    } else {
+                                        currentCapacityMarginRaw = old
+                                        withContext(Dispatchers.Main) { toast("capacity_margin: ${r.short()}") }
+                                    }
                                 }
                             }
-                        }
-                    )
+                        )
+                    }
                 }
+
+                Spacer(modifier = Modifier.height(12.dp))
             }
-
-            Spacer(modifier = Modifier.height(12.dp))
 
             // =================================================
             // SECTION 3: Tunables
             // =================================================
-            StyledBlockCard(styles = styles, title = "Governor tunables") {
+            val anyFreqList = clusters.firstOrNull()?.let { c -> clusterFreqs[c.id] } ?: emptyList()
+            val showTunablesSection = support.schedutilUpRate || (support.interactiveHispeed && anyFreqList.isNotEmpty()) || support.touchBoost
+            if (showTunablesSection) {
+                StyledBlockCard(styles = styles, title = "Governor tunables") {
+                    var tunableRowShown = false
 
-                if (!support.schedutilUpRate) {
-                    NotSupportedRow("Schedutil Up Rate", "Ліміт частоти підйому (schedutil)")
-                } else {
-                    SettingsDropdownRow(
-                        title = "Schedutil Up Rate",
-                        subtitle = "Як швидко schedutil може піднімати частоту. Нижче = швидша реакція, але більше споживання.",
-                        currentValue = if (schedutilUpRate.isBlank()) "—" else schedutilUpRate,
-                        availableValues = timingRates,
-                        isRooted = true,
-                        styles = styles,
-                        onValueSelected = { selected ->
-                            val old = schedutilUpRate
-                            schedutilUpRate = selected
+                    if (support.schedutilUpRate) {
+                        SettingsDropdownRow(
+                            title = "Schedutil Up Rate",
+                            subtitle = "Як швидко schedutil може піднімати частоту. Нижче = швидша реакція, але більше споживання.",
+                            currentValue = if (schedutilUpRate.isBlank()) "—" else schedutilUpRate,
+                            availableValues = timingRates,
+                            isRooted = true,
+                            styles = styles,
+                            onValueSelected = { selected ->
+                                val old = schedutilUpRate
+                                schedutilUpRate = selected
 
-                            scope.launch(Dispatchers.IO) {
-                                val r = KernelControlEngine.setSchedutilUpRateUs(selected)
-                                if (r.ok) {
-                                    prefs.edit().putString("saved_schedutil_up_rate", selected).apply()
-                                } else {
-                                    schedutilUpRate = old
-                                    withContext(Dispatchers.Main) { toast("schedutil: ${r.short()}") }
+                                scope.launch(Dispatchers.IO) {
+                                    val r = KernelControlEngine.setSchedutilUpRateUs(selected)
+                                    if (r.ok) {
+                                        prefs.edit().putString("saved_schedutil_up_rate", selected).apply()
+                                    } else {
+                                        schedutilUpRate = old
+                                        withContext(Dispatchers.Main) { toast("schedutil: ${r.short()}") }
+                                    }
                                 }
                             }
-                        }
-                    )
-                }
+                        )
+                        tunableRowShown = true
+                    }
 
-                val anyFreqList = clusters.firstOrNull()?.let { c -> clusterFreqs[c.id] } ?: emptyList()
-                HorizontalDivider(color = styles.titleTextColor.copy(alpha = 0.05f), modifier = Modifier.padding(horizontal = 16.dp))
+                    if (support.interactiveHispeed && anyFreqList.isNotEmpty()) {
+                        if (tunableRowShown) HorizontalDivider(color = styles.titleTextColor.copy(alpha = 0.05f), modifier = Modifier.padding(horizontal = 16.dp))
+                        SettingsDropdownRow(
+                            title = "Interactive Hispeed Freq",
+                            subtitle = "Частота, на яку governor стрибає при навантаженні. Вище = швидше, але гарячіше.",
+                            currentValue = interactiveHispeedFreqKHz.toLongOrNull()?.let { "${it / 1000} MHz" } ?: "—",
+                            availableValues = anyFreqList,
+                            isRooted = true,
+                            styles = styles,
+                            onValueSelected = { selected ->
+                                val mhz = selected.replace(" MHz", "").trim().toLongOrNull() ?: return@SettingsDropdownRow
+                                val khz = (mhz * 1000).toString()
+                                val old = interactiveHispeedFreqKHz
+                                interactiveHispeedFreqKHz = khz
 
-                if (!support.interactiveHispeed) {
-                    NotSupportedRow("Interactive Hispeed Freq", "Поріг “hispeed” (interactive)")
-                } else {
-                    SettingsDropdownRow(
-                        title = "Interactive Hispeed Freq",
-                        subtitle = "Частота, на яку governor стрибає при навантаженні. Вище = швидше, але гарячіше.",
-                        currentValue = interactiveHispeedFreqKHz.toLongOrNull()?.let { "${it / 1000} MHz" } ?: "—",
-                        availableValues = anyFreqList,
-                        isRooted = true,
-                        styles = styles,
-                        onValueSelected = { selected ->
-                            val mhz = selected.replace(" MHz", "").trim().toLongOrNull() ?: return@SettingsDropdownRow
-                            val khz = (mhz * 1000).toString()
-                            val old = interactiveHispeedFreqKHz
-                            interactiveHispeedFreqKHz = khz
-
-                            scope.launch(Dispatchers.IO) {
-                                val r = KernelControlEngine.setInteractiveHispeedFreqKHz(khz)
-                                if (r.ok) {
-                                    prefs.edit().putString("saved_interactive_hispeed_khz", khz).apply()
-                                } else {
-                                    interactiveHispeedFreqKHz = old
-                                    withContext(Dispatchers.Main) { toast("hispeed: ${r.short()}") }
+                                scope.launch(Dispatchers.IO) {
+                                    val r = KernelControlEngine.setInteractiveHispeedFreqKHz(khz)
+                                    if (r.ok) {
+                                        prefs.edit().putString("saved_interactive_hispeed_khz", khz).apply()
+                                    } else {
+                                        interactiveHispeedFreqKHz = old
+                                        withContext(Dispatchers.Main) { toast("hispeed: ${r.short()}") }
+                                    }
                                 }
                             }
-                        }
-                    )
-                }
+                        )
+                        tunableRowShown = true
+                    }
 
-                HorizontalDivider(color = styles.titleTextColor.copy(alpha = 0.05f), modifier = Modifier.padding(horizontal = 16.dp))
+                    if (support.touchBoost) {
+                        if (tunableRowShown) HorizontalDivider(color = styles.titleTextColor.copy(alpha = 0.05f), modifier = Modifier.padding(horizontal = 16.dp))
+                        SettingsSwitchRow(
+                            title = "TouchBoost",
+                            subtitle = "Короткий буст частоти при торканні екрану. Візуально дає чуйніший UI, але трошки їсть батарею.",
+                            checked = isTouchBoostEnabled,
+                            styles = styles,
+                            onCheckedChange = { checked ->
+                                val old = isTouchBoostEnabled
+                                isTouchBoostEnabled = checked
 
-                if (!support.touchBoost) {
-                    NotSupportedRow("TouchBoost", "Буст при торканні (Qualcomm/подібне)")
-                } else {
-                    SettingsSwitchRow(
-                        title = "TouchBoost",
-                        subtitle = "Короткий буст частоти при торканні екрану. Візуально дає чуйніший UI, але трошки їсть батарею.",
-                        checked = isTouchBoostEnabled,
-                        styles = styles,
-                        onCheckedChange = { checked ->
-                            val old = isTouchBoostEnabled
-                            isTouchBoostEnabled = checked
-
-                            scope.launch(Dispatchers.IO) {
-                                val r = KernelControlEngine.setTouchBoost(checked)
-                                if (r.ok) {
-                                    prefs.edit().putString("saved_touchboost", if (checked) "1" else "0").apply()
-                                } else {
-                                    isTouchBoostEnabled = old
-                                    withContext(Dispatchers.Main) { toast("touchboost: ${r.short()}") }
+                                scope.launch(Dispatchers.IO) {
+                                    val r = KernelControlEngine.setTouchBoost(checked)
+                                    if (r.ok) {
+                                        prefs.edit().putString("saved_touchboost", if (checked) "1" else "0").apply()
+                                    } else {
+                                        isTouchBoostEnabled = old
+                                        withContext(Dispatchers.Main) { toast("touchboost: ${r.short()}") }
+                                    }
                                 }
                             }
-                        }
-                    )
+                        )
+                    }
                 }
+
+                Spacer(modifier = Modifier.height(12.dp))
             }
-
-            Spacer(modifier = Modifier.height(12.dp))
 
             // =================================================
             // SECTION 4: Power
             // =================================================
-            StyledBlockCard(styles = styles, title = "Power") {
+            val showPowerSection = support.mcSaving || support.powerCollapse
+            if (showPowerSection) {
+                StyledBlockCard(styles = styles, title = "Power") {
+                    var powerRowShown = false
 
-                if (!support.mcSaving) {
-                    NotSupportedRow("Multicore Power Saving", "Економія на багатоядерності")
-                } else {
-                    SettingsSwitchRow(
-                        title = "Multicore Power Saving",
-                        subtitle = "Обмежує/оптимізує використання багатьох ядер. Може продовжити батарею, але знизити пікову продуктивність.",
-                        checked = isMulticoreSavingEnabled,
-                        styles = styles,
-                        onCheckedChange = { checked ->
-                            val old = isMulticoreSavingEnabled
-                            isMulticoreSavingEnabled = checked
+                    if (support.mcSaving) {
+                        SettingsSwitchRow(
+                            title = "Multicore Power Saving",
+                            subtitle = "Обмежує/оптимізує використання багатьох ядер. Може продовжити батарею, але знизити пікову продуктивність.",
+                            checked = isMulticoreSavingEnabled,
+                            styles = styles,
+                            onCheckedChange = { checked ->
+                                val old = isMulticoreSavingEnabled
+                                isMulticoreSavingEnabled = checked
 
-                            scope.launch(Dispatchers.IO) {
-                                val r = KernelControlEngine.setMulticorePowerSaving(checked)
-                                if (r.ok) {
-                                    prefs.edit().putString("saved_mc", if (checked) "1" else "0").apply()
-                                } else {
-                                    isMulticoreSavingEnabled = old
-                                    withContext(Dispatchers.Main) { toast("mc_power: ${r.short()}") }
+                                scope.launch(Dispatchers.IO) {
+                                    val r = KernelControlEngine.setMulticorePowerSaving(checked)
+                                    if (r.ok) {
+                                        prefs.edit().putString("saved_mc", if (checked) "1" else "0").apply()
+                                    } else {
+                                        isMulticoreSavingEnabled = old
+                                        withContext(Dispatchers.Main) { toast("mc_power: ${r.short()}") }
+                                    }
                                 }
                             }
-                        }
-                    )
-                }
+                        )
+                        powerRowShown = true
+                    }
 
-                HorizontalDivider(color = styles.titleTextColor.copy(alpha = 0.05f), modifier = Modifier.padding(horizontal = 16.dp))
+                    if (support.powerCollapse) {
+                        if (powerRowShown) HorizontalDivider(color = styles.titleTextColor.copy(alpha = 0.05f), modifier = Modifier.padding(horizontal = 16.dp))
+                        SettingsSwitchRow(
+                            title = "Power Collapse",
+                            subtitle = "Дозволяє глибші стани сну CPU. Краще для standby, інколи може впливати на миттєву чуйність.",
+                            checked = isPowerCollapseEnabled,
+                            styles = styles,
+                            onCheckedChange = { checked ->
+                                val old = isPowerCollapseEnabled
+                                isPowerCollapseEnabled = checked
 
-                if (!support.powerCollapse) {
-                    NotSupportedRow("Power Collapse", "Глибокий сон CPU")
-                } else {
-                    SettingsSwitchRow(
-                        title = "Power Collapse",
-                        subtitle = "Дозволяє глибші стани сну CPU. Краще для standby, інколи може впливати на миттєву чуйність.",
-                        checked = isPowerCollapseEnabled,
-                        styles = styles,
-                        onCheckedChange = { checked ->
-                            val old = isPowerCollapseEnabled
-                            isPowerCollapseEnabled = checked
-
-                            scope.launch(Dispatchers.IO) {
-                                val r = KernelControlEngine.setPowerCollapse(checked)
-                                if (r.ok) {
-                                    prefs.edit().putString("saved_pc", if (checked) "1" else "0").apply()
-                                } else {
-                                    isPowerCollapseEnabled = old
-                                    withContext(Dispatchers.Main) { toast("power_collapse: ${r.short()}") }
+                                scope.launch(Dispatchers.IO) {
+                                    val r = KernelControlEngine.setPowerCollapse(checked)
+                                    if (r.ok) {
+                                        prefs.edit().putString("saved_pc", if (checked) "1" else "0").apply()
+                                    } else {
+                                        isPowerCollapseEnabled = old
+                                        withContext(Dispatchers.Main) { toast("power_collapse: ${r.short()}") }
+                                    }
                                 }
                             }
-                        }
-                    )
+                        )
+                    }
                 }
             }
 
             // =================================================
             // SECTION 5: Thermal
             // =================================================
-            thermal?.let { _ ->
+            if (thermal != null && support.thermal) {
                 Spacer(modifier = Modifier.height(12.dp))
                 StyledBlockCard(styles = styles, title = "Thermal") {
-                    if (!support.thermal) {
-                        NotSupportedRow("Thermal throttling", "Керування термо-захистом")
-                    } else {
-                        SettingsSwitchRow(
-                            title = "Thermal throttling",
-                            subtitle = "Захист від перегріву (тротлінг). Вимикати небезпечно: можливі перегрів/вильоти/тротлінг по залізу.",
-                            checked = isThermalEnabled,
-                            styles = styles,
-                            onCheckedChange = { enabled ->
-                                val old = isThermalEnabled
-                                isThermalEnabled = enabled
+                    SettingsSwitchRow(
+                        title = "Thermal throttling",
+                        subtitle = "Захист від перегріву (тротлінг). Вимикати небезпечно: можливі перегрів/вильоти/тротлінг по залізу.",
+                        checked = isThermalEnabled,
+                        styles = styles,
+                        onCheckedChange = { enabled ->
+                            val old = isThermalEnabled
+                            isThermalEnabled = enabled
 
-                                scope.launch(Dispatchers.IO) {
-                                    val r = KernelControlEngine.setThermalEnabled(enabled)
-                                    if (r.ok) {
-                                        prefs.edit().putString("saved_thermal", if (enabled) "1" else "0").apply()
-                                    } else {
-                                        isThermalEnabled = old
-                                        withContext(Dispatchers.Main) { toast("thermal: ${r.short()}") }
-                                    }
+                            scope.launch(Dispatchers.IO) {
+                                val r = KernelControlEngine.setThermalEnabled(enabled)
+                                if (r.ok) {
+                                    prefs.edit().putString("saved_thermal", if (enabled) "1" else "0").apply()
+                                } else {
+                                    isThermalEnabled = old
+                                    withContext(Dispatchers.Main) { toast("thermal: ${r.short()}") }
                                 }
                             }
-                        )
-                    }
+                        }
+                    )
                 }
             }
         }

@@ -32,6 +32,7 @@ fun IoConfigScreen(isRooted: Boolean, onBack: () -> Unit) {
     var availableIos by remember { mutableStateOf(listOf<String>()) }
 
     var currentReadAhead by remember { mutableStateOf("Loading...") }
+    var readAheadPath by remember { mutableStateOf<String?>(null) }
     val readAheadLevels = listOf("128 KB", "256 KB", "512 KB", "1024 KB", "2048 KB")
 
     var ioStatsPath by remember { mutableStateOf<String?>(null) }
@@ -49,6 +50,7 @@ fun IoConfigScreen(isRooted: Boolean, onBack: () -> Unit) {
     var currentZramComp by remember { mutableStateOf("") }
     var availableZramComps by remember { mutableStateOf(listOf<String>()) }
 
+    var swappinessPath by remember { mutableStateOf<String?>(null) }
     var currentSwappiness by remember { mutableStateOf("Loading...") }
     val swappinessLevels = listOf("0 (Disabled)", "30 (Light)", "60 (Balanced)", "100 (Aggressive)", "150 (ZRAM Max)")
 
@@ -56,6 +58,7 @@ fun IoConfigScreen(isRooted: Boolean, onBack: () -> Unit) {
     var currentPageCluster by remember { mutableStateOf("") }
     val pageClusterLevels = listOf("0 (Optimal for ZRAM)", "1", "2", "3 (Default for HDD)")
 
+    var vfsPath by remember { mutableStateOf<String?>(null) }
     var currentVfs by remember { mutableStateOf("Loading...") }
     val vfsLevels = listOf("10 (Keep Cache Long)", "50", "100 (Default)", "150 (Drop Fast)")
 
@@ -121,7 +124,9 @@ fun IoConfigScreen(isRooted: Boolean, onBack: () -> Unit) {
 
                 // 2. ДОДАТКОВІ ПАРАМЕТРИ НАКОПИЧУВАЧА
                 if (blockPath != null) {
-                    currentReadAhead = probeNode("$blockPath/read_ahead_kb")?.second?.let { "$it KB" } ?: "Unknown"
+                    val readAheadProbe = probeNode("$blockPath/read_ahead_kb")
+                    readAheadPath = readAheadProbe?.first
+                    currentReadAhead = readAheadProbe?.second?.let { "$it KB" } ?: "Unknown"
 
                     val ioStatsProbe = probeNode("$blockPath/iostats")
                     ioStatsPath = ioStatsProbe?.first
@@ -145,7 +150,9 @@ fun IoConfigScreen(isRooted: Boolean, onBack: () -> Unit) {
                     availableZramComps = raw.replace("[", "").replace("]", "").split(" ").filter { it.isNotBlank() }
                 }
 
-                val swapRaw = probeNode("/proc/sys/vm/swappiness")?.second
+                val swappinessProbe = probeNode("/proc/sys/vm/swappiness")
+                swappinessPath = swappinessProbe?.first
+                val swapRaw = swappinessProbe?.second
                 currentSwappiness = when (swapRaw) {
                     "0" -> "0 (Disabled)"
                     "30" -> "30 (Light)"
@@ -160,7 +167,9 @@ fun IoConfigScreen(isRooted: Boolean, onBack: () -> Unit) {
                 pageClusterPath = pcProbe?.first
                 currentPageCluster = pcProbe?.second ?: ""
 
-                val vfsRaw = probeNode("/proc/sys/vm/vfs_cache_pressure")?.second
+                val vfsProbe = probeNode("/proc/sys/vm/vfs_cache_pressure")
+                vfsPath = vfsProbe?.first
+                val vfsRaw = vfsProbe?.second
                 currentVfs = when (vfsRaw) {
                     "10" -> "10 (Keep Cache Long)"
                     "50" -> "50"
@@ -205,45 +214,51 @@ fun IoConfigScreen(isRooted: Boolean, onBack: () -> Unit) {
                 .padding(bottom = 32.dp)
         ) {
             // --- БЛОК 1: ФІЗИЧНА ПАМ'ЯТЬ (STORAGE) ---
-            if (blockPath != null || !isRooted) {
+            val showStorageSection = (blockPath != null && (availableIos.isNotEmpty() || readAheadPath != null || nrRequestsPath != null || addRandomPath != null || ioStatsPath != null)) || !isRooted
+            if (showStorageSection) {
                 StyledBlockCard(styles = styles, title = "Storage Tuning ($blockDevice)") {
                     var needsDivider = false
 
-                    SettingsDropdownRow(
-                        title = "I/O Scheduler",
-                        subtitle = "Manages storage read/write requests.",
-                        currentValue = currentIo,
-                        availableValues = availableIos,
-                        isRooted = isRooted,
-                        styles = styles,
-                        onValueSelected = { selected ->
-                            currentIo = selected
-                            scope.launch(Dispatchers.IO) {
-                                RootManager.executeRootCommand("echo $selected > $blockPath/scheduler")
-                                prefs.edit().putString("saved_scheduler", selected).apply()
-                                withContext(Dispatchers.Main) { Toast.makeText(context, "Scheduler applied!", Toast.LENGTH_SHORT).show() }
+                    if (availableIos.isNotEmpty()) {
+                        SettingsDropdownRow(
+                            title = "I/O Scheduler",
+                            subtitle = "Manages storage read/write requests.",
+                            currentValue = currentIo,
+                            availableValues = availableIos,
+                            isRooted = isRooted,
+                            styles = styles,
+                            onValueSelected = { selected ->
+                                currentIo = selected
+                                scope.launch(Dispatchers.IO) {
+                                    RootManager.executeRootCommand("echo $selected > $blockPath/scheduler")
+                                    prefs.edit().putString("saved_scheduler", selected).apply()
+                                    withContext(Dispatchers.Main) { Toast.makeText(context, "Scheduler applied!", Toast.LENGTH_SHORT).show() }
+                                }
                             }
-                        }
-                    )
-                    needsDivider = true
+                        )
+                        needsDivider = true
+                    }
 
-                    if (needsDivider) HorizontalDivider(color = styles.titleTextColor.copy(alpha = 0.05f), modifier = Modifier.padding(horizontal = 16.dp))
-                    SettingsDropdownRow(
-                        title = "Read-Ahead Cache",
-                        subtitle = "Higher value speeds up large app launches.",
-                        currentValue = currentReadAhead,
-                        availableValues = readAheadLevels,
-                        isRooted = isRooted,
-                        styles = styles,
-                        onValueSelected = { selected ->
-                            currentReadAhead = selected
-                            val kb = selected.replace(" KB", "")
-                            scope.launch(Dispatchers.IO) {
-                                RootManager.executeRootCommand("echo $kb > $blockPath/read_ahead_kb")
-                                prefs.edit().putString("saved_readahead", kb).apply()
+                    if (readAheadPath != null || !isRooted) {
+                        if (needsDivider) HorizontalDivider(color = styles.titleTextColor.copy(alpha = 0.05f), modifier = Modifier.padding(horizontal = 16.dp))
+                        SettingsDropdownRow(
+                            title = "Read-Ahead Cache",
+                            subtitle = "Higher value speeds up large app launches.",
+                            currentValue = currentReadAhead,
+                            availableValues = readAheadLevels,
+                            isRooted = isRooted,
+                            styles = styles,
+                            onValueSelected = { selected ->
+                                currentReadAhead = selected
+                                val kb = selected.replace(" KB", "")
+                                scope.launch(Dispatchers.IO) {
+                                    RootManager.executeRootCommand("echo $kb > $readAheadPath")
+                                    prefs.edit().putString("saved_readahead", kb).apply()
+                                }
                             }
-                        }
-                    )
+                        )
+                        needsDivider = true
+                    }
 
                     if (nrRequestsPath != null || !isRooted) {
                         if (needsDivider) HorizontalDivider(color = styles.titleTextColor.copy(alpha = 0.05f), modifier = Modifier.padding(horizontal = 16.dp))
@@ -263,6 +278,7 @@ fun IoConfigScreen(isRooted: Boolean, onBack: () -> Unit) {
                                 }
                             }
                         )
+                        needsDivider = true
                     }
 
                     if (addRandomPath != null || !isRooted) {
@@ -281,6 +297,7 @@ fun IoConfigScreen(isRooted: Boolean, onBack: () -> Unit) {
                                 }
                             }
                         )
+                        needsDivider = true
                     }
 
                     if (ioStatsPath != null || !isRooted) {
@@ -305,85 +322,94 @@ fun IoConfigScreen(isRooted: Boolean, onBack: () -> Unit) {
             }
 
             // --- БЛОК 2: ОПЕРАТИВНА ПАМ'ЯТЬ (VM / ZRAM) ---
-            StyledBlockCard(styles = styles, title = "Virtual Memory & ZRAM") {
-                if (zramCompPath != null || !isRooted) {
-                    SettingsDropdownRow(
-                        title = "ZRAM Algorithm",
-                        subtitle = "Select 'zstd' or 'lz4' for best Android 13+ performance.",
-                        currentValue = if (isRooted) currentZramComp else "LOCKED",
-                        availableValues = availableZramComps,
-                        isRooted = isRooted,
-                        styles = styles,
-                        onValueSelected = { selected ->
-                            currentZramComp = selected
-                            scope.launch(Dispatchers.IO) {
-                                // Алгоритм ZRAM зазвичай можна змінити тільки після скидання (reset) ZRAM,
-                                // але деякі ядра дозволяють гарячу зміну. Ми робимо прямий запис.
-                                RootManager.executeRootCommand("echo $selected > $zramCompPath")
-                                prefs.edit().putString("saved_zram_comp", selected).apply()
+            val showVmSection = zramCompPath != null || swappinessPath != null || pageClusterPath != null || vfsPath != null || !isRooted
+            if (showVmSection) {
+                StyledBlockCard(styles = styles, title = "Virtual Memory & ZRAM") {
+                    var needsDivider = false
+
+                    if (zramCompPath != null || !isRooted) {
+                        SettingsDropdownRow(
+                            title = "ZRAM Algorithm",
+                            subtitle = "Select 'zstd' or 'lz4' for best Android 13+ performance.",
+                            currentValue = if (isRooted) currentZramComp else "LOCKED",
+                            availableValues = availableZramComps,
+                            isRooted = isRooted,
+                            styles = styles,
+                            onValueSelected = { selected ->
+                                currentZramComp = selected
+                                scope.launch(Dispatchers.IO) {
+                                    RootManager.executeRootCommand("echo $selected > $zramCompPath")
+                                    prefs.edit().putString("saved_zram_comp", selected).apply()
+                                }
                             }
-                        }
-                    )
-                    HorizontalDivider(color = styles.titleTextColor.copy(alpha = 0.05f), modifier = Modifier.padding(horizontal = 16.dp))
-                }
-
-                SettingsDropdownRow(
-                    title = "Swappiness",
-                    subtitle = "How aggressively apps are moved to ZRAM.",
-                    currentValue = currentSwappiness,
-                    availableValues = swappinessLevels,
-                    isRooted = isRooted,
-                    styles = styles,
-                    onValueSelected = { selected ->
-                        currentSwappiness = selected
-                        val value = selected.substringBefore(" ")
-                        scope.launch(Dispatchers.IO) {
-                            RootManager.executeRootCommand("echo $value > /proc/sys/vm/swappiness")
-                            prefs.edit().putString("saved_swappiness", value).apply()
-                        }
+                        )
+                        needsDivider = true
                     }
-                )
 
-                if (pageClusterPath != null || !isRooted) {
-                    HorizontalDivider(color = styles.titleTextColor.copy(alpha = 0.05f), modifier = Modifier.padding(horizontal = 16.dp))
-                    SettingsDropdownRow(
-                        title = "Page Cluster",
-                        subtitle = "Number of pages read per swap. '0' is best for ZRAM.",
-                        currentValue = if (isRooted) currentPageCluster.let { raw -> pageClusterLevels.find { it.startsWith(raw) } ?: "$raw (Custom)" } else "LOCKED",
-                        availableValues = pageClusterLevels,
-                        isRooted = isRooted,
-                        styles = styles,
-                        onValueSelected = { selected ->
-                            val v = selected.substringBefore(" ")
-                            currentPageCluster = selected
-                            scope.launch(Dispatchers.IO) {
-                                RootManager.executeRootCommand("echo $v > $pageClusterPath")
-                                prefs.edit().putString("saved_page_cluster", v).apply()
+                    if (swappinessPath != null || !isRooted) {
+                        if (needsDivider) HorizontalDivider(color = styles.titleTextColor.copy(alpha = 0.05f), modifier = Modifier.padding(horizontal = 16.dp))
+                        SettingsDropdownRow(
+                            title = "Swappiness",
+                            subtitle = "How aggressively apps are moved to ZRAM.",
+                            currentValue = currentSwappiness,
+                            availableValues = swappinessLevels,
+                            isRooted = isRooted,
+                            styles = styles,
+                            onValueSelected = { selected ->
+                                currentSwappiness = selected
+                                val value = selected.substringBefore(" ")
+                                scope.launch(Dispatchers.IO) {
+                                    RootManager.executeRootCommand("echo $value > $swappinessPath")
+                                    prefs.edit().putString("saved_swappiness", value).apply()
+                                }
                             }
-                        }
-                    )
-                }
-
-                HorizontalDivider(color = styles.titleTextColor.copy(alpha = 0.05f), modifier = Modifier.padding(horizontal = 16.dp))
-
-                SettingsDropdownRow(
-                    title = "VFS Cache Pressure",
-                    subtitle = "Lower = Snappier gallery/files, uses more RAM.",
-                    currentValue = currentVfs,
-                    availableValues = vfsLevels,
-                    isRooted = isRooted,
-                    styles = styles,
-                    onValueSelected = { selected ->
-                        currentVfs = selected
-                        val value = selected.substringBefore(" ")
-                        scope.launch(Dispatchers.IO) {
-                            RootManager.executeRootCommand("echo $value > /proc/sys/vm/vfs_cache_pressure")
-                            prefs.edit().putString("saved_vfs", value).apply()
-                        }
+                        )
+                        needsDivider = true
                     }
-                )
+
+                    if (pageClusterPath != null || !isRooted) {
+                        if (needsDivider) HorizontalDivider(color = styles.titleTextColor.copy(alpha = 0.05f), modifier = Modifier.padding(horizontal = 16.dp))
+                        SettingsDropdownRow(
+                            title = "Page Cluster",
+                            subtitle = "Number of pages read per swap. '0' is best for ZRAM.",
+                            currentValue = if (isRooted) currentPageCluster.let { raw -> pageClusterLevels.find { it.startsWith(raw) } ?: "$raw (Custom)" } else "LOCKED",
+                            availableValues = pageClusterLevels,
+                            isRooted = isRooted,
+                            styles = styles,
+                            onValueSelected = { selected ->
+                                val v = selected.substringBefore(" ")
+                                currentPageCluster = selected
+                                scope.launch(Dispatchers.IO) {
+                                    RootManager.executeRootCommand("echo $v > $pageClusterPath")
+                                    prefs.edit().putString("saved_page_cluster", v).apply()
+                                }
+                            }
+                        )
+                        needsDivider = true
+                    }
+
+                    if (vfsPath != null || !isRooted) {
+                        if (needsDivider) HorizontalDivider(color = styles.titleTextColor.copy(alpha = 0.05f), modifier = Modifier.padding(horizontal = 16.dp))
+                        SettingsDropdownRow(
+                            title = "VFS Cache Pressure",
+                            subtitle = "Lower = Snappier gallery/files, uses more RAM.",
+                            currentValue = currentVfs,
+                            availableValues = vfsLevels,
+                            isRooted = isRooted,
+                            styles = styles,
+                            onValueSelected = { selected ->
+                                currentVfs = selected
+                                val value = selected.substringBefore(" ")
+                                scope.launch(Dispatchers.IO) {
+                                    RootManager.executeRootCommand("echo $value > $vfsPath")
+                                    prefs.edit().putString("saved_vfs", value).apply()
+                                }
+                            }
+                        )
+                    }
+                }
+                Spacer(modifier = Modifier.height(12.dp))
             }
-            Spacer(modifier = Modifier.height(12.dp))
 
             // --- БЛОК 3: ADVANCED VM (Kernel 5.4 - 6.1+) ---
             val showAdvVmSection = mglruPath != null || watermarkPath != null
