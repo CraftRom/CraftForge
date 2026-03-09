@@ -83,6 +83,10 @@ fun CpuConfigScreen(isRooted: Boolean, onBack: () -> Unit) {
 
     val coreOnline = remember { mutableStateMapOf<Int, Boolean>() }
 
+    var globalGovernorSelection by remember { mutableStateOf("—") }
+    var commonGovernorOptions by remember { mutableStateOf<List<String>>(emptyList()) }
+    var totalCoreCount by remember { mutableStateOf(0) }
+
     fun toast(msg: String) = Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
 
     fun displayFromRawBoost(raw: String): String =
@@ -101,6 +105,22 @@ fun CpuConfigScreen(isRooted: Boolean, onBack: () -> Unit) {
 
     fun mhzToKhz(selected: String): Long? =
         selected.replace(" MHz", "").trim().toLongOrNull()?.let { it * 1000L }
+
+    fun clusterTierLabel(clusterId: Int): String {
+        val maxByCluster = clusters.associate { cluster ->
+            cluster.id to (clusterMax[cluster.id]?.substringBefore(" ")?.toLongOrNull() ?: 0L)
+        }
+        val distinctMax = maxByCluster.values.filter { it > 0L }.distinct().sorted()
+        if (distinctMax.isEmpty()) return "Cluster"
+        val current = maxByCluster[clusterId] ?: 0L
+        val highest = distinctMax.last()
+        return when {
+            distinctMax.size >= 3 && current == highest && (clusters.firstOrNull { it.id == clusterId }?.cores?.size == 1) -> "Prime"
+            current == highest -> "Big"
+            distinctMax.size > 1 && current == distinctMax.first() -> "Little"
+            else -> "Mid"
+        }
+    }
 
     @Composable
     fun NotSupportedRow(title: String, subtitle: String) {
@@ -165,21 +185,16 @@ fun CpuConfigScreen(isRooted: Boolean, onBack: () -> Unit) {
             val clusterSnapshots = coroutineScope {
                 detectedClusters.map { c ->
                     async {
-                        val govNow = KernelControlEngine.readClusterGovernor(c)
-                        val minNow = KernelControlEngine.readClusterMinFreqKHz(c)
-                        val maxNow = KernelControlEngine.readClusterMaxFreqKHz(c)
-                        val govList = KernelControlEngine.readClusterAvailableGovernors(c)
-                        val freqsKHz = KernelControlEngine.readClusterAvailableFreqsKHz(c)
-                        val freqsDisplay = freqsKHz.map { "${it / 1000} MHz" }
-                        val perCore = c.cores.map { core -> core.id to KernelControlEngine.readCoreOnline(core) }
+                        val runtime = KernelControlEngine.readClusterRuntimeSnapshot(c)
+                        val freqsDisplay = runtime.availableFreqsKHz.map { "${it / 1000} MHz" }
                         ClusterSnapshot(
                             id = c.id,
-                            governor = govNow,
-                            minDisplay = "${minNow / 1000} MHz",
-                            maxDisplay = "${maxNow / 1000} MHz",
-                            governorList = govList,
+                            governor = runtime.governor,
+                            minDisplay = "${runtime.minKHz / 1000} MHz",
+                            maxDisplay = "${runtime.maxKHz / 1000} MHz",
+                            governorList = runtime.availableGovernors,
                             freqList = freqsDisplay,
-                            coreStates = perCore
+                            coreStates = runtime.coreStates
                         )
                     }
                 }.map { it.await() }
@@ -221,6 +236,19 @@ fun CpuConfigScreen(isRooted: Boolean, onBack: () -> Unit) {
             clusterFreqs[clusterState.id] = clusterState.freqList
             clusterState.coreStates.forEach { (coreId, online) -> coreOnline[coreId] = online }
         }
+
+        totalCoreCount = snapshot.clusters.sumOf { it.cores.size }
+        commonGovernorOptions = snapshot.clusterSnapshots
+            .map { it.governorList.toSet() }
+            .reduceOrNull { acc, set -> acc.intersect(set) }
+            ?.toList()
+            ?.sorted()
+            .orEmpty()
+        globalGovernorSelection = snapshot.clusterSnapshots
+            .map { it.governor }
+            .distinct()
+            .singleOrNull()
+            ?: "Mixed"
 
         isEasEnabled = snapshot.eas
         currentSchedBoost = snapshot.schedBoost
@@ -276,10 +304,52 @@ fun CpuConfigScreen(isRooted: Boolean, onBack: () -> Unit) {
                     "SoC" to runtimeProfile.socFamily,
                     "Kernel" to runtimeProfile.kernelFlavor,
                     "Features" to "${listOf(support.eas, support.schedBoost, support.migrate, support.initTaskUtil, support.autoGroup, support.capMarginUp, support.schedutilUpRate, support.interactiveHispeed, support.touchBoost, support.mcSaving, support.powerCollapse, support.thermal).count { it }} / 12",
-                    "Clusters" to clusters.size.toString()
+                    "Clusters" to clusters.size.toString(),
+                    "Hints" to runtimeProfile.hints.joinToString().ifBlank { "—" }
                 ),
                 styles = styles
             )
+
+            StyledBlockCard(styles = styles, title = "Cluster control center") {
+                SettingsBadgeRow(
+                    title = "Topology",
+                    subtitle = "Виявлено $totalCoreCount ядер у ${clusters.size} кластерах. Кожен cluster має власні межі частот і governor, тому масові дії йдуть лише по сумісних параметрах.",
+                    value = if (clusters.isEmpty()) "EMPTY" else "READY",
+                    isRooted = true,
+                    styles = styles
+                )
+
+                HorizontalDivider(color = styles.titleTextColor.copy(alpha = 0.05f), modifier = Modifier.padding(horizontal = 16.dp))
+
+                SettingsDropdownRow(
+                    title = "Governor для всіх кластерів",
+                    subtitle = "Застосовує спільний governor до всіх кластерів, якщо він підтримується на кожному policy. Корисно для швидкого переходу між balanced/performance.",
+                    currentValue = globalGovernorSelection,
+                    availableValues = commonGovernorOptions,
+                    isRooted = true,
+                    styles = styles,
+                    onValueSelected = { selected ->
+                        val oldGovByCluster = clusters.associate { it.id to (clusterGov[it.id] ?: "") }
+                        globalGovernorSelection = selected
+                        clusters.forEach { clusterGov[it.id] = selected }
+
+                        scope.launch(Dispatchers.IO) {
+                            val results = KernelControlEngine.setAllClustersGovernor(clusters, selected)
+                            if (results.all { it.ok }) {
+                                val editor = prefs.edit()
+                                clusters.forEach { editor.putString("cluster_${it.id}_gov", selected) }
+                                editor.apply()
+                            } else {
+                                oldGovByCluster.forEach { (id, value) -> clusterGov[id] = value }
+                                globalGovernorSelection = oldGovByCluster.values.distinct().singleOrNull() ?: "Mixed"
+                                withContext(Dispatchers.Main) {
+                                    toast("All clusters governor: ${results.firstOrNull { !it.ok }?.short() ?: "FAIL"}")
+                                }
+                            }
+                        }
+                    }
+                )
+            }
 
             // =================================================
             // SECTION 1: Per-cluster + per-core
@@ -293,7 +363,7 @@ fun CpuConfigScreen(isRooted: Boolean, onBack: () -> Unit) {
                 val maxValue = clusterMax[cid] ?: "Loading..."
                 val freqList = clusterFreqs[cid] ?: emptyList()
 
-                StyledBlockCard(styles = styles, title = "Cluster $cid (${cluster.cores.size} cores)") {
+                StyledBlockCard(styles = styles, title = "${clusterTierLabel(cid)} cluster $cid • cores ${cluster.cores.joinToString { it.id.toString() }}") {
 
                     SettingsDropdownRow(
                         title = "Governor",
@@ -310,8 +380,10 @@ fun CpuConfigScreen(isRooted: Boolean, onBack: () -> Unit) {
                                 val r = KernelControlEngine.setClusterGovernor(cluster, selected)
                                 if (r.ok) {
                                     prefs.edit().putString("cluster_${cid}_gov", selected).apply()
+                                    globalGovernorSelection = clusters.map { clusterGov[it.id] ?: selected }.distinct().singleOrNull() ?: "Mixed"
                                 } else {
                                     clusterGov[cid] = old ?: govValue
+                                    globalGovernorSelection = clusters.map { clusterGov[it.id] ?: "" }.distinct().singleOrNull() ?: "Mixed"
                                     withContext(Dispatchers.Main) { toast("Cluster $cid governor: ${r.short()}") }
                                 }
                             }

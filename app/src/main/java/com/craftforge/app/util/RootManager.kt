@@ -1,6 +1,7 @@
 package com.craftforge.app.util
 
 import android.util.Log
+import java.io.File
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.util.concurrent.ConcurrentHashMap
@@ -22,8 +23,11 @@ object RootManager {
     @Volatile
     private var cachedSu: String? = null
 
+    private const val NULL_SENTINEL = "__NULL__"
+
     private val existsCache = ConcurrentHashMap<String, Boolean>()
     private val writableCache = ConcurrentHashMap<String, Boolean>()
+    private val readCache = ConcurrentHashMap<String, String>()
 
     private val suCandidates = listOf(
         "su",
@@ -38,6 +42,8 @@ object RootManager {
     )
 
     private fun shQuote(s: String): String = "'" + s.replace("'", "'\\''") + "'"
+
+    fun shellQuote(s: String): String = shQuote(s)
 
     private fun runProcess(cmd: List<String>, timeoutSec: Long = 12): CmdResult {
         return try {
@@ -94,21 +100,60 @@ object RootManager {
         return r
     }
 
+    fun execRootScript(commands: List<String>, timeoutSec: Long = 20): CmdResult {
+        if (commands.isEmpty()) return CmdResult(0, "", "", used = "script")
+        val su = resolveSu() ?: return CmdResult(-1, "", "no_su", used = null)
+
+        return try {
+            val process = ProcessBuilder(listOf(su)).start()
+            process.outputStream.bufferedWriter().use { writer ->
+                commands.forEach { line ->
+                    writer.write(line)
+                    writer.newLine()
+                }
+                writer.write("exit")
+                writer.newLine()
+                writer.flush()
+            }
+
+            val finished = process.waitFor(timeoutSec, TimeUnit.SECONDS)
+            if (!finished) {
+                process.destroy()
+                return CmdResult(-1, "", "timeout", used = su)
+            }
+
+            val out = BufferedReader(InputStreamReader(process.inputStream)).readText().trim()
+            val err = BufferedReader(InputStreamReader(process.errorStream)).readText().trim()
+            CmdResult(process.exitValue(), out, err, used = su)
+        } catch (t: Throwable) {
+            CmdResult(-1, "", t.message ?: "exception", used = su)
+        }
+    }
+
     fun clearNodeCaches() {
         existsCache.clear()
         writableCache.clear()
+        readCache.clear()
     }
 
     fun invalidateNodeCache(path: String?) {
         if (path.isNullOrBlank()) return
         existsCache.remove(path)
         writableCache.remove(path)
+        readCache.remove(path)
     }
 
     fun nodeExists(path: String, forceRefresh: Boolean = false): Boolean {
         if (!forceRefresh) {
             existsCache[path]?.let { return it }
         }
+
+        val direct = runCatching { File(path).exists() }.getOrDefault(false)
+        if (direct) {
+            existsCache[path] = true
+            return true
+        }
+
         val ok = execRoot("[ -e ${shQuote(path)} ] && echo 1 || echo 0").out == "1"
         existsCache[path] = ok
         return ok
@@ -118,6 +163,15 @@ object RootManager {
         if (!forceRefresh) {
             writableCache[path]?.let { return it }
         }
+
+        val file = File(path)
+        val directWritable = runCatching { file.exists() && file.canWrite() }.getOrDefault(false)
+        if (directWritable) {
+            existsCache[path] = true
+            writableCache[path] = true
+            return true
+        }
+
         val ok = execRoot("[ -w ${shQuote(path)} ] && echo 1 || echo 0").out == "1"
         existsCache[path] = existsCache[path] ?: ok
         writableCache[path] = ok
@@ -125,9 +179,25 @@ object RootManager {
     }
 
     fun readNode(path: String, forceRefresh: Boolean = false): String? {
+        if (!forceRefresh) {
+            readCache[path]?.let { cached -> return if (cached == NULL_SENTINEL) null else cached }
+        }
         if (!nodeExists(path, forceRefresh)) return null
+
+        val direct = runCatching {
+            val file = File(path)
+            if (file.canRead()) file.readText().trim().ifEmpty { null } else null
+        }.getOrNull()
+
+        if (direct != null) {
+            readCache[path] = direct.ifEmpty { NULL_SENTINEL }
+            return direct
+        }
+
         val r = execRoot("cat ${shQuote(path)}")
-        return if (r.ok) r.out.trim().ifEmpty { null } else null
+        val value = if (r.ok) r.out.trim().ifEmpty { null } else null
+        readCache[path] = value ?: NULL_SENTINEL
+        return value
     }
 
     fun writeNode(path: String, value: String, verify: Boolean = true, timeoutSec: Long = 12): CmdResult {

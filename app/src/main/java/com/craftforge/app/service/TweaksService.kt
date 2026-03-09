@@ -11,9 +11,40 @@ import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import com.craftforge.app.MainActivity
-import kotlinx.coroutines.*
+import com.craftforge.app.util.KernelControlEngine
+import com.craftforge.app.util.RootManager
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 
 class TweaksService : Service() {
+
+    private fun shellWrite(path: String, value: String): String =
+        "[ -w ${RootManager.shellQuote(path)} ] && printf %s ${RootManager.shellQuote(value)} > ${RootManager.shellQuote(path)}"
+
+    private fun addWrites(commands: MutableSet<String>, value: String?, vararg paths: String) {
+        val clean = value?.trim()?.takeIf { it.isNotEmpty() } ?: return
+        paths.forEach { path -> commands += shellWrite(path, clean) }
+    }
+
+    private fun addLoopWrites(commands: MutableSet<String>, value: String?, glob: String, leaf: String) {
+        val clean = value?.trim()?.takeIf { it.isNotEmpty() } ?: return
+        val quoted = RootManager.shellQuote(clean)
+        commands += buildString {
+            append("for base in ")
+            append(glob)
+            append("; do [ -d \"\$base\" ] || continue; ")
+            append("p=\"\$base/")
+            append(leaf)
+            append("\"; [ -w \"\$p\" ] && printf %s ")
+            append(quoted)
+            append(" > \"\$p\"; done")
+        }
+    }
+
 
     companion object {
         private const val CHANNEL_ID = "craftforge_core_service_v3"
@@ -64,124 +95,90 @@ class TweaksService : Service() {
 
     private suspend fun applySystemTweaksWithProgress() {
         val prefs = getSharedPreferences("TweaksPrefs", MODE_PRIVATE)
-        val commands = mutableListOf<String>()
+        updateNotificationProgress("Scanning CPU topology...", 0, 3)
 
-        // ==========================================
-        // 1. CPU Базові
-        // ==========================================
-        prefs.getString("saved_governor", null)?.let { commands.add("echo $it > /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor") }
-        prefs.getString("saved_max_freq", null)?.let { commands.add("echo $it > /sys/devices/system/cpu/cpu*/cpufreq/scaling_max_freq") }
-        prefs.getString("saved_min_freq", null)?.let { commands.add("echo $it > /sys/devices/system/cpu/cpu*/cpufreq/scaling_min_freq") }
+        val cpuResults = withTimeoutOrNull(EXECUTION_TIMEOUT) {
+            KernelControlEngine.applySavedCpuTweaks(prefs)
+        }.orEmpty()
 
-        // ==========================================
-        // 2. CPU Просунуті (Touchboost, EAS, Sleep)
-        // ==========================================
-        prefs.getString("saved_touchboost", null)?.let { commands.add("echo $it > /sys/module/msm_performance/parameters/touchboost") }
-        prefs.getString("saved_mc_power", null)?.let { commands.add("echo $it > /sys/devices/system/cpu/sched_mc_power_savings") }
-        prefs.getString("saved_power_collapse", null)?.let { commands.add("echo $it > /sys/module/pm_8x60/parameters/sleep_mode") }
-
-        // EAS (Energy Aware Scheduling) - ВСІ ФІЧІ
-        prefs.getString("saved_eas_enable", null)?.let { commands.add("echo $it > /sys/devices/system/cpu/eas/enable") }
-        prefs.getString("saved_sched_boost", null)?.let { commands.add("echo $it > /proc/sys/kernel/sched_boost") }
-        prefs.getString("saved_sched_upmigrate", null)?.let { commands.add("echo $it > /proc/sys/kernel/sched_upmigrate") }
-        prefs.getString("saved_sched_downmigrate", null)?.let { commands.add("echo $it > /proc/sys/kernel/sched_downmigrate") }
-        prefs.getString("saved_capacity_margin", null)?.let { commands.add("echo $it > /proc/sys/kernel/sched_capacity_margin_up") }
-        prefs.getString("saved_init_task_util", null)?.let { commands.add("echo $it > /proc/sys/kernel/sched_initial_task_util") }
-        prefs.getString("saved_autogroup", null)?.let { commands.add("echo $it > /proc/sys/kernel/sched_autogroup_enabled") }
-
-        // Tunables
-        prefs.getString("saved_sched_uprate", null)?.let { commands.add("echo $it > /sys/devices/system/cpu/cpufreq/schedutil/up_rate_limit_us") }
-        prefs.getString("saved_interactive_hispeed", null)?.let { commands.add("echo $it > /sys/devices/system/cpu/cpufreq/interactive/hispeed_freq") }
-        prefs.getString("saved_walt_uprate", null)?.let { commands.add("echo $it > /sys/devices/system/cpu/cpufreq/walt/up_rate_limit_us") }
-        prefs.getString("saved_walt_downrate", null)?.let { commands.add("echo $it > /sys/devices/system/cpu/cpufreq/walt/down_rate_limit_us") }
-
-        // ==========================================
-        // 3. GPU (Adreno)
-        // ==========================================
-        prefs.getString("saved_gpu_governor", null)?.let { commands.add("echo $it > /sys/class/kgsl/kgsl-3d0/devfreq/governor") }
-        prefs.getString("saved_gpu_max_freq", null)?.let { commands.add("echo $it > /sys/class/kgsl/kgsl-3d0/devfreq/max_freq") }
-        prefs.getString("saved_gpu_min_freq", null)?.let { commands.add("echo $it > /sys/class/kgsl/kgsl-3d0/devfreq/min_freq") }
-        prefs.getString("saved_adreno_idler", null)?.let { commands.add("echo $it > /sys/module/adreno_idler/parameters/adreno_idler_active") }
-        prefs.getString("saved_gpu_idle_timer", null)?.let { commands.add("echo $it > /sys/class/kgsl/kgsl-3d0/idle_timer") }
-        prefs.getString("saved_adrenoboost", null)?.let { commands.add("echo $it > /sys/class/kgsl/kgsl-3d0/devfreq/adrenoboost") }
-
-        // ==========================================
-        // 4. STORAGE & I/O
-        // ==========================================
-        prefs.getString("saved_scheduler", null)?.let {
-            commands.add("echo $it > /sys/block/mmcblk0/queue/scheduler")
-            commands.add("echo $it > /sys/block/sda/queue/scheduler")
-        }
-        prefs.getString("saved_readahead", null)?.let {
-            commands.add("echo $it > /sys/block/sda/queue/read_ahead_kb")
-            commands.add("echo $it > /sys/block/mmcblk0/queue/read_ahead_kb")
-        }
-        prefs.getString("saved_nr_requests", null)?.let {
-            commands.add("echo $it > /sys/block/sda/queue/nr_requests")
-            commands.add("echo $it > /sys/block/mmcblk0/queue/nr_requests")
-        }
-        prefs.getString("saved_add_random", null)?.let {
-            commands.add("echo $it > /sys/block/sda/queue/add_random")
-            commands.add("echo $it > /sys/block/mmcblk0/queue/add_random")
-        }
-        prefs.getString("saved_iostats", null)?.let {
-            commands.add("echo $it > /sys/block/sda/queue/iostats")
-            commands.add("echo $it > /sys/block/mmcblk0/queue/iostats")
-        }
-
-        // ==========================================
-        // 5. MEMORY & VM (ZRAM, MGLRU, Dirty Cache)
-        // ==========================================
-        prefs.getString("saved_zram_comp", null)?.let { commands.add("echo $it > /sys/block/zram0/comp_algorithm") }
-        prefs.getString("saved_swappiness", null)?.let { commands.add("echo $it > /proc/sys/vm/swappiness") }
-        prefs.getString("saved_page_cluster", null)?.let { commands.add("echo $it > /proc/sys/vm/page-cluster") }
-        prefs.getString("saved_vfs", null)?.let { commands.add("echo $it > /proc/sys/vm/vfs_cache_pressure") }
-
-        prefs.getString("saved_mglru", null)?.let { commands.add("echo $it > /sys/kernel/mm/lru_gen/enabled") }
-        prefs.getString("saved_watermark_scale", null)?.let { commands.add("echo $it > /proc/sys/vm/watermark_scale_factor") }
-
-        prefs.getString("saved_dirty_ratio", null)?.let { commands.add("echo $it > /proc/sys/vm/dirty_ratio") }
-        prefs.getString("saved_dirty_bg_ratio", null)?.let { commands.add("echo $it > /proc/sys/vm/dirty_background_ratio") }
-
-        // ==========================================
-        // 6. NETWORK
-        // ==========================================
-        prefs.getString("saved_tcp", null)?.let { commands.add("echo $it > /proc/sys/net/ipv4/tcp_congestion_control") }
-        prefs.getString("saved_tcp_fastopen", null)?.let { commands.add("echo $it > /proc/sys/net/ipv4/tcp_fastopen") }
-        prefs.getString("saved_tcp_ecn", null)?.let { commands.add("echo $it > /proc/sys/net/ipv4/tcp_ecn") }
-        prefs.getString("saved_tcp_window", null)?.let { commands.add("echo $it > /proc/sys/net/ipv4/tcp_window_scaling") }
-        prefs.getString("saved_disable_ipv6", null)?.let {
-            commands.add("echo $it > /proc/sys/net/ipv6/conf/all/disable_ipv6")
-            commands.add("echo $it > /proc/sys/net/ipv6/conf/default/disable_ipv6")
-        }
+        updateNotificationProgress("Applying storage / memory / network tweaks...", 1, 3)
+        val commands = buildNonCpuCommands(prefs)
 
         if (commands.isNotEmpty()) {
-            val total = commands.size
-            updateNotificationProgress("Forging system...", 0, total)
-
             withTimeoutOrNull(EXECUTION_TIMEOUT) {
-                try {
-                    // Виконання всіх команд через один сеанс SU для швидкості
-                    val process = Runtime.getRuntime().exec("su")
-                    process.outputStream.bufferedWriter().use { writer ->
-                        commands.forEachIndexed { index, cmd ->
-                            writer.write("$cmd\n")
-                            // Оновлюємо UI кожні 10 команд
-                            if (index % 10 == 0 || index == total - 1) {
-                                updateNotificationProgress("Applying tweaks...", index + 1, total)
-                            }
-                        }
-                        writer.write("exit\n")
-                        writer.flush()
-                    }
-                    process.waitFor()
-                } catch (e: Exception) {
-                    e.printStackTrace()
-                }
+                RootManager.execRootScript(commands, timeoutSec = 20)
             }
         }
 
-        updateNotificationFinal("Optimizations Active & Protected")
+        val failedCpuWrites = cpuResults.count { !it.ok }
+        val appliedCpuWrites = cpuResults.count { it.ok }
+
+        updateNotificationProgress("Finalizing runtime profile...", 2, 3)
+        updateNotificationFinal(
+            if (failedCpuWrites == 0) {
+                "Optimizations Active • CPU $appliedCpuWrites writes"
+            } else {
+                "Optimizations Active • CPU $appliedCpuWrites OK / $failedCpuWrites skipped"
+            }
+        )
+    }
+
+    private fun buildNonCpuCommands(prefs: android.content.SharedPreferences): List<String> {
+        val commands = linkedSetOf<String>()
+
+        // GPU - Qualcomm KGSL + generic devfreq GPU fallbacks
+        addWrites(commands, prefs.getString("saved_gpu_governor", null),
+            "/sys/class/kgsl/kgsl-3d0/devfreq/governor"
+        )
+        addLoopWrites(commands, prefs.getString("saved_gpu_governor", null), "/sys/class/devfreq/*gpu*", "governor")
+        addLoopWrites(commands, prefs.getString("saved_gpu_governor", null), "/sys/class/devfreq/*mali*", "governor")
+
+        addWrites(commands, prefs.getString("saved_gpu_max_freq", null),
+            "/sys/class/kgsl/kgsl-3d0/devfreq/max_freq"
+        )
+        addLoopWrites(commands, prefs.getString("saved_gpu_max_freq", null), "/sys/class/devfreq/*gpu*", "max_freq")
+        addLoopWrites(commands, prefs.getString("saved_gpu_min_freq", null), "/sys/class/devfreq/*gpu*", "min_freq")
+        addWrites(commands, prefs.getString("saved_gpu_min_freq", null),
+            "/sys/class/kgsl/kgsl-3d0/devfreq/min_freq"
+        )
+        addWrites(commands, prefs.getString("saved_adreno_idler", null),
+            "/sys/module/adreno_idler/parameters/adreno_idler_active"
+        )
+        addWrites(commands, prefs.getString("saved_gpu_idle_timer", null),
+            "/sys/class/kgsl/kgsl-3d0/idle_timer"
+        )
+        addWrites(commands, prefs.getString("saved_adrenoboost", null),
+            "/sys/class/kgsl/kgsl-3d0/devfreq/adrenoboost"
+        )
+
+        // I/O - generic loop across block devices
+        addLoopWrites(commands, prefs.getString("saved_scheduler", null), "/sys/block/*/queue", "scheduler")
+        addLoopWrites(commands, prefs.getString("saved_readahead", null), "/sys/block/*/queue", "read_ahead_kb")
+        addLoopWrites(commands, prefs.getString("saved_nr_requests", null), "/sys/block/*/queue", "nr_requests")
+        addLoopWrites(commands, prefs.getString("saved_add_random", null), "/sys/block/*/queue", "add_random")
+        addLoopWrites(commands, prefs.getString("saved_iostats", null), "/sys/block/*/queue", "iostats")
+
+        // Memory / VM
+        addWrites(commands, prefs.getString("saved_zram_comp", null), "/sys/block/zram0/comp_algorithm")
+        addWrites(commands, prefs.getString("saved_swappiness", null), "/proc/sys/vm/swappiness")
+        addWrites(commands, prefs.getString("saved_page_cluster", null), "/proc/sys/vm/page-cluster")
+        addWrites(commands, prefs.getString("saved_vfs", null), "/proc/sys/vm/vfs_cache_pressure")
+        addWrites(commands, prefs.getString("saved_mglru", null), "/sys/kernel/mm/lru_gen/enabled")
+        addWrites(commands, prefs.getString("saved_watermark_scale", null), "/proc/sys/vm/watermark_scale_factor")
+        addWrites(commands, prefs.getString("saved_dirty_ratio", null), "/proc/sys/vm/dirty_ratio")
+        addWrites(commands, prefs.getString("saved_dirty_bg_ratio", null), "/proc/sys/vm/dirty_background_ratio")
+
+        // Network
+        addWrites(commands, prefs.getString("saved_tcp", null), "/proc/sys/net/ipv4/tcp_congestion_control")
+        addWrites(commands, prefs.getString("saved_tcp_fastopen", null), "/proc/sys/net/ipv4/tcp_fastopen")
+        addWrites(commands, prefs.getString("saved_tcp_ecn", null), "/proc/sys/net/ipv4/tcp_ecn")
+        addWrites(commands, prefs.getString("saved_tcp_window", null), "/proc/sys/net/ipv4/tcp_window_scaling")
+        addWrites(commands, prefs.getString("saved_disable_ipv6", null),
+            "/proc/sys/net/ipv6/conf/all/disable_ipv6",
+            "/proc/sys/net/ipv6/conf/default/disable_ipv6"
+        )
+
+        return commands.toList()
     }
 
     private fun updateNotificationProgress(taskText: String, step: Int, totalSteps: Int) {
@@ -201,7 +198,7 @@ class TweaksService : Service() {
 
     override fun onDestroy() {
         super.onDestroy()
-        serviceScope.cancel() // Зупинка всіх фонових процесів
+        serviceScope.cancel()
     }
 
     private fun createNotificationChannel() {

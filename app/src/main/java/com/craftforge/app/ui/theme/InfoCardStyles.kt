@@ -82,9 +82,9 @@ fun infoCardStyles(): InfoCardStyles {
         progressTrackColor = colors.onSurface.copy(alpha = 0.1f),
         accentColor = colors.secondary,
         chartBackgroundColor = colors.surfaceVariant.copy(alpha = 0.5f),
-        rowBackgroundColor = colors.surfaceVariant.copy(alpha = if (isDark) 0.28f else 0.55f),
-        chipBackgroundColor = colors.secondaryContainer.copy(alpha = if (isDark) 0.45f else 0.85f),
-        mutedTextColor = colors.onSurface.copy(alpha = 0.62f)
+        rowBackgroundColor = colors.surfaceVariant.copy(alpha = if (isDark) 0.22f else 0.68f),
+        chipBackgroundColor = colors.secondaryContainer.copy(alpha = if (isDark) 0.52f else 0.9f),
+        mutedTextColor = colors.onSurface.copy(alpha = 0.68f)
     )
 }
 
@@ -94,7 +94,7 @@ fun StyledBlockCard(title: String, styles: InfoCardStyles = infoCardStyles(), co
         if (title.isNotEmpty()) {
             Row(
                 modifier = Modifier
-                    .padding(bottom = 8.dp, start = 4.dp)
+                    .padding(bottom = 10.dp, start = 4.dp)
                     .clip(RoundedCornerShape(999.dp))
                     .background(styles.chipBackgroundColor)
                     .padding(horizontal = 10.dp, vertical = 6.dp),
@@ -120,7 +120,7 @@ fun StyledBlockCard(title: String, styles: InfoCardStyles = infoCardStyles(), co
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(styles.cardCornerRadius))
                 .background(styles.cardBackgroundColor)
-                .border(1.dp, styles.accentColor.copy(alpha = 0.16f), RoundedCornerShape(styles.cardCornerRadius)),
+                .border(1.dp, styles.accentColor.copy(alpha = 0.12f), RoundedCornerShape(styles.cardCornerRadius)),
             content = content
         )
     }
@@ -131,10 +131,10 @@ fun SettingsSwitchRow(title: String, subtitle: String, checked: Boolean, styles:
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 8.dp)
+            .padding(horizontal = 12.dp, vertical = 7.dp)
             .clip(RoundedCornerShape(styles.rowCornerRadius))
             .background(styles.rowBackgroundColor)
-            .padding(14.dp),
+            .padding(horizontal = 14.dp, vertical = 13.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Column(modifier = Modifier.weight(1f).padding(end = 16.dp)) {
@@ -164,7 +164,7 @@ fun SettingsBadgeRow(title: String, subtitle: String, value: String, isRooted: B
             .padding(horizontal = 12.dp, vertical = 8.dp)
             .clip(RoundedCornerShape(styles.rowCornerRadius))
             .background(styles.rowBackgroundColor)
-            .padding(14.dp),
+            .padding(horizontal = 14.dp, vertical = 13.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Column(modifier = Modifier.weight(1f).padding(end = 16.dp)) {
@@ -180,7 +180,7 @@ fun SettingsBadgeRow(title: String, subtitle: String, value: String, isRooted: B
                 .padding(horizontal = 12.dp, vertical = 7.dp),
             contentAlignment = Alignment.Center
         ) {
-            Text(text = if (isRooted) value.uppercase() else "LOCKED", fontSize = 12.sp, color = if (isRooted) styles.accentColor else MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold, maxLines = 1)
+            Text(text = if (isRooted) value else "LOCKED", fontSize = 12.sp, color = if (isRooted) styles.accentColor else MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold, maxLines = 1)
         }
     }
 }
@@ -194,7 +194,7 @@ fun SettingsDropdownRow(title: String, subtitle: String, currentValue: String, a
             .padding(horizontal = 12.dp, vertical = 8.dp)
             .clip(RoundedCornerShape(styles.rowCornerRadius))
             .background(styles.rowBackgroundColor)
-            .padding(14.dp),
+            .padding(horizontal = 14.dp, vertical = 13.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Column(modifier = Modifier.weight(1f).padding(end = 16.dp)) {
@@ -213,7 +213,7 @@ fun SettingsDropdownRow(title: String, subtitle: String, currentValue: String, a
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = currentValue.uppercase(),
+                    text = currentValue,
                     fontSize = 12.sp,
                     color = if (isRooted) styles.accentColor else MaterialTheme.colorScheme.error,
                     fontWeight = FontWeight.Bold,

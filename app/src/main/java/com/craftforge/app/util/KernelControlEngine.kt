@@ -1,12 +1,17 @@
 package com.craftforge.app.util
 
+import android.content.SharedPreferences
 import android.os.Build
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import java.util.concurrent.ConcurrentHashMap
+import kotlin.math.max
 
 object KernelControlEngine {
 
@@ -50,6 +55,16 @@ object KernelControlEngine {
         val thermal: Boolean = false,
     )
 
+    data class ClusterRuntimeSnapshot(
+        val clusterId: Int,
+        val governor: String,
+        val minKHz: Long,
+        val maxKHz: Long,
+        val availableGovernors: List<String>,
+        val availableFreqsKHz: List<Long>,
+        val coreStates: List<Pair<Int, Boolean>>
+    )
+
     data class WriteResult(
         val ok: Boolean,
         val key: String,
@@ -70,13 +85,16 @@ object KernelControlEngine {
     private val unsupported = ConcurrentHashMap.newKeySet<String>()
     private val writeLocks = ConcurrentHashMap<String, Mutex>()
 
+    private val governorListCache = ConcurrentHashMap<String, List<String>>()
+    private val freqListCache = ConcurrentHashMap<String, List<Long>>()
+    private val clusterRuntimeCache = ConcurrentHashMap<Int, ClusterRuntimeSnapshot>()
+
     @Volatile private var supportSnapshotCache: SupportSnapshot? = null
     @Volatile private var cpuClusterCache: List<CpuCluster>? = null
     @Volatile private var runtimeProfileCache: RuntimeProfile? = null
 
     fun isSupported(key: String): Boolean = !unsupported.contains(key)
 
-    private fun norm(v: String): String = v.trim().split(Regex("s+")).firstOrNull().orEmpty()
 
     private fun getProp(name: String): String = runCatching {
         val cls = Class.forName("android.os.SystemProperties")
@@ -85,6 +103,91 @@ object KernelControlEngine {
     }.getOrDefault("")
 
     private fun read(path: String): String? = RootManager.readNode(path)
+    private fun existingNodePath(vararg candidates: String): String? =
+        candidates.firstOrNull { candidate -> RootManager.nodeExists(candidate) }
+
+    private fun readFirstNonBlank(vararg candidates: String): String? =
+        candidates.firstNotNullOfOrNull { candidate -> read(candidate)?.trim()?.takeIf { it.isNotBlank() } }
+
+    private fun readLongCandidate(vararg candidates: String): Long? =
+        candidates.firstNotNullOfOrNull { candidate -> read(candidate)?.trim()?.toLongOrNull() }
+
+    private fun norm(value: String): String = value.trim().replace(Regex("\\s+"), " ")
+
+
+    private fun parseCpuList(raw: String): List<Int> {
+        return raw
+            .trim()
+            .split(Regex("[,\\s]+"))
+            .flatMap { token ->
+                val part = token.trim()
+                if (part.isBlank()) return@flatMap emptyList()
+                if ('-' in part) {
+                    val bounds = part.split('-', limit = 2)
+                    val start = bounds.getOrNull(0)?.toIntOrNull()
+                    val end = bounds.getOrNull(1)?.toIntOrNull()
+                    if (start != null && end != null) {
+                        val from = minOf(start, end)
+                        val to = maxOf(start, end)
+                        (from..to).toList()
+                    } else {
+                        emptyList()
+                    }
+                } else {
+                    part.toIntOrNull()?.let(::listOf).orEmpty()
+                }
+            }
+            .distinct()
+            .sorted()
+    }
+
+    private fun listPolicyIds(): List<Int> {
+        val command = "for d in /sys/devices/system/cpu/cpufreq/policy*; do [ -d \"${'$'}d\" ] && basename \"${'$'}d\"; done"
+        val raw = RootManager.execRoot(command).out
+        return raw.lineSequence()
+            .map { it.trim() }
+            .filter { it.startsWith("policy") }
+            .mapNotNull { it.removePrefix("policy").toIntOrNull() }
+            .distinct()
+            .sorted()
+            .toList()
+    }
+
+    private fun discoverCpuIds(limit: Int = max(Runtime.getRuntime().availableProcessors() * 2, 12)): List<Int> {
+        return (0 until limit).filter { cpuId -> RootManager.nodeExists("/sys/devices/system/cpu/cpu$cpuId") }
+    }
+
+    private fun clusterCoreIdsForPolicy(policyPath: String, fallbackPolicyId: Int): List<Int> {
+        val raw = listOf(
+            "$policyPath/related_cpus",
+            "$policyPath/affected_cpus"
+        ).firstNotNullOfOrNull { candidate ->
+            read(candidate)?.trim()?.takeIf { it.isNotBlank() }
+        }
+
+        val parsed = raw?.let(::parseCpuList).orEmpty()
+        if (parsed.isNotEmpty()) return parsed
+
+        val cpuFromPolicy = read("$policyPath/cpuinfo_cur_freq")
+        if (cpuFromPolicy != null) return listOf(fallbackPolicyId)
+
+        return listOf(fallbackPolicyId)
+    }
+
+    private fun invalidateClusterCaches(cluster: CpuCluster) {
+        cluster.govPath?.let {
+            RootManager.invalidateNodeCache(it)
+            governorListCache.remove(it)
+        }
+        cluster.availableGovsPath?.let { governorListCache.remove(it) }
+        cluster.availableFreqsPath?.let { freqListCache.remove(it) }
+        cluster.minFreqPath?.let { RootManager.invalidateNodeCache(it) }
+        cluster.maxFreqPath?.let { RootManager.invalidateNodeCache(it) }
+        cluster.cores.forEach { core ->
+            core.onlinePath?.let { RootManager.invalidateNodeCache(it) }
+        }
+        clusterRuntimeCache.remove(cluster.id)
+    }
 
     private suspend fun writeRaw(path: String, value: String, key: String): WriteResult = withContext(Dispatchers.IO) {
         if (!RootManager.nodeExists(path)) {
@@ -207,61 +310,184 @@ object KernelControlEngine {
         ).also { runtimeProfileCache = it }
     }
 
+    private fun buildCpuPathClusters(cpuIds: List<Int>): List<CpuCluster> {
+        val groupedBases = linkedMapOf<String, MutableList<Int>>()
+        cpuIds.forEach { cpuId ->
+            val base = "/sys/devices/system/cpu/cpu$cpuId/cpufreq"
+            if (!RootManager.nodeExists(base)) return@forEach
+
+            val signature = listOf(
+                read("$base/related_cpus")?.trim(),
+                read("$base/affected_cpus")?.trim(),
+                RootManager.execRoot("readlink -f '$base' || echo '$base'").out.trim().ifBlank { base }
+            ).firstOrNull { !it.isNullOrBlank() } ?: base
+
+            groupedBases.getOrPut(signature) { mutableListOf() }.add(cpuId)
+        }
+
+        return groupedBases.values.mapIndexed { idx, cpuIdsForGroup ->
+            val firstCpu = cpuIdsForGroup.minOrNull() ?: idx
+            val base = "/sys/devices/system/cpu/cpu$firstCpu/cpufreq"
+            val parsedRelated = listOf(
+                read("$base/related_cpus")?.trim(),
+                read("$base/affected_cpus")?.trim()
+            ).firstNotNullOfOrNull { it?.takeIf { s -> s.isNotBlank() } }
+                ?.let(::parseCpuList)
+                .orEmpty()
+                .ifEmpty { cpuIdsForGroup.distinct().sorted() }
+
+            CpuCluster(
+                id = idx,
+                policyPath = base,
+                cores = parsedRelated.map { cpu -> CpuCore(cpu, "/sys/devices/system/cpu/cpu$cpu/online") },
+                minFreqPath = existingNodePath("$base/scaling_min_freq", "$base/cpuinfo_min_freq"),
+                maxFreqPath = existingNodePath("$base/scaling_max_freq", "$base/cpuinfo_max_freq"),
+                govPath = existingNodePath("$base/scaling_governor"),
+                availableGovsPath = existingNodePath("$base/scaling_available_governors"),
+                availableFreqsPath = existingNodePath("$base/scaling_available_frequencies")
+            )
+        }
+    }
+
+    private fun buildVendorTopologyClusters(cpuIds: List<Int>, profile: RuntimeProfile): List<CpuCluster> {
+        if (cpuIds.isEmpty()) return emptyList()
+
+        val grouped = linkedMapOf<String, MutableList<Int>>()
+        cpuIds.forEach { cpuId ->
+            val cpuBase = "/sys/devices/system/cpu/cpu$cpuId"
+            val cpufreqBase = "$cpuBase/cpufreq"
+            val explicitClusterId = readFirstNonBlank(
+                "$cpuBase/topology/cluster_id",
+                "$cpuBase/topology/physical_package_id"
+            )
+            val relatedCpuSignature = readFirstNonBlank(
+                "$cpufreqBase/related_cpus",
+                "$cpufreqBase/affected_cpus"
+            )?.let(::parseCpuList)?.takeIf { it.isNotEmpty() }?.joinToString(",")
+            val capacity = readLongCandidate(
+                "$cpuBase/cpu_capacity",
+                "$cpuBase/cpu_capacity_max",
+                "$cpuBase/topology/core_capacity"
+            )
+            val maxFreq = readLongCandidate(
+                "$cpufreqBase/cpuinfo_max_freq",
+                "$cpufreqBase/scaling_max_freq"
+            )
+            val freqBucket = maxFreq?.let { (it / 100000L).toString() }
+
+            val signature = when (profile.socFamily) {
+                "Qualcomm" -> listOfNotNull(
+                    explicitClusterId?.let { "cluster:$it" },
+                    relatedCpuSignature?.let { "related:$it" },
+                    capacity?.let { "cap:$it" },
+                    freqBucket?.let { "freq:$it" }
+                )
+                "MediaTek" -> listOfNotNull(
+                    explicitClusterId?.let { "cluster:$it" },
+                    capacity?.let { "cap:$it" },
+                    relatedCpuSignature?.let { "related:$it" },
+                    freqBucket?.let { "freq:$it" }
+                )
+                else -> listOfNotNull(
+                    explicitClusterId?.let { "cluster:$it" },
+                    relatedCpuSignature?.let { "related:$it" },
+                    capacity?.let { "cap:$it" },
+                    freqBucket?.let { "freq:$it" }
+                )
+            }.joinToString("|").ifBlank { "cpu:$cpuId" }
+
+            grouped.getOrPut(signature) { mutableListOf() }.add(cpuId)
+        }
+
+        return grouped.values.mapIndexed { idx, groupedCpuIds ->
+            val orderedCpuIds = groupedCpuIds.distinct().sorted()
+            val anchorCpu = orderedCpuIds.first()
+            val cpuBase = "/sys/devices/system/cpu/cpu$anchorCpu"
+            val cpufreqBase = "$cpuBase/cpufreq"
+            CpuCluster(
+                id = idx,
+                policyPath = cpufreqBase,
+                cores = orderedCpuIds.map { cpu -> CpuCore(cpu, "/sys/devices/system/cpu/cpu$cpu/online") },
+                minFreqPath = existingNodePath("$cpufreqBase/scaling_min_freq", "$cpufreqBase/cpuinfo_min_freq"),
+                maxFreqPath = existingNodePath("$cpufreqBase/scaling_max_freq", "$cpufreqBase/cpuinfo_max_freq"),
+                govPath = existingNodePath("$cpufreqBase/scaling_governor"),
+                availableGovsPath = existingNodePath("$cpufreqBase/scaling_available_governors"),
+                availableFreqsPath = existingNodePath("$cpufreqBase/scaling_available_frequencies")
+            )
+        }.filter { it.cores.isNotEmpty() }
+    }
+
     suspend fun detectCpuClusters(forceRefresh: Boolean = false): List<CpuCluster> = withContext(Dispatchers.IO) {
+        if (forceRefresh) {
+            cpuClusterCache = null
+            clusterRuntimeCache.clear()
+            governorListCache.clear()
+            freqListCache.clear()
+        }
         if (!forceRefresh) {
             cpuClusterCache?.let { return@withContext it }
         }
 
+        val profile = getRuntimeProfile(forceRefresh = false)
         val clusters = mutableListOf<CpuCluster>()
-        var policyId = 0
+        val cpuIds = discoverCpuIds(limit = max(Runtime.getRuntime().availableProcessors() * 3, 16))
 
-        fun existingFile(path: String): String? = if (RootManager.nodeExists(path)) path else null
+        val policyIds = listPolicyIds()
+        Log.i(TAG, "detectCpuClusters: policy ids=$policyIds cpuIds=$cpuIds profile=${profile.socFamily}/${profile.romFamily}")
 
-        while (true) {
+        policyIds.forEach { policyId ->
             val policyPath = "/sys/devices/system/cpu/cpufreq/policy$policyId"
-            if (!RootManager.nodeExists(policyPath)) break
+            if (!RootManager.nodeExists(policyPath)) return@forEach
 
-            val related = RootManager.readNode(policyPath + "/related_cpus")?.trim().orEmpty()
-            val coreIds = related.split(" ").mapNotNull { it.toIntOrNull() }.distinct().sorted()
+            val coreIds = clusterCoreIdsForPolicy(policyPath, fallbackPolicyId = policyId)
             val cores = coreIds.map { id -> CpuCore(id, "/sys/devices/system/cpu/cpu$id/online") }
 
             clusters += CpuCluster(
                 id = policyId,
                 policyPath = policyPath,
                 cores = cores,
-                minFreqPath = existingFile("$policyPath/scaling_min_freq") ?: existingFile("$policyPath/cpuinfo_min_freq"),
-                maxFreqPath = existingFile("$policyPath/scaling_max_freq") ?: existingFile("$policyPath/cpuinfo_max_freq"),
-                govPath = existingFile("$policyPath/scaling_governor"),
-                availableGovsPath = existingFile("$policyPath/scaling_available_governors"),
-                availableFreqsPath = existingFile("$policyPath/scaling_available_frequencies")
+                minFreqPath = existingNodePath("$policyPath/scaling_min_freq", "$policyPath/cpuinfo_min_freq"),
+                maxFreqPath = existingNodePath("$policyPath/scaling_max_freq", "$policyPath/cpuinfo_max_freq"),
+                govPath = existingNodePath("$policyPath/scaling_governor"),
+                availableGovsPath = existingNodePath("$policyPath/scaling_available_governors"),
+                availableFreqsPath = existingNodePath("$policyPath/scaling_available_frequencies")
             )
-            policyId++
         }
 
-        if (clusters.isEmpty()) {
-            val discovered = mutableListOf<String>()
-            var cpuId = 0
-            while (cpuId < 12) {
-                val cpuBase = "/sys/devices/system/cpu/cpu$cpuId/cpufreq"
-                if (RootManager.nodeExists(cpuBase)) discovered += cpuBase
-                cpuId++
-            }
-            discovered.distinct().forEachIndexed { idx, base ->
-                clusters += CpuCluster(
-                    id = idx,
-                    policyPath = base,
-                    cores = listOf(CpuCore(idx, "/sys/devices/system/cpu/cpu$idx/online")),
-                    minFreqPath = existingFile("$base/scaling_min_freq") ?: existingFile("$base/cpuinfo_min_freq"),
-                    maxFreqPath = existingFile("$base/scaling_max_freq") ?: existingFile("$base/cpuinfo_max_freq"),
-                    govPath = existingFile("$base/scaling_governor"),
-                    availableGovsPath = existingFile("$base/scaling_available_governors"),
-                    availableFreqsPath = existingFile("$base/scaling_available_frequencies")
-                )
-            }
+        val cpuPathClusters = buildCpuPathClusters(cpuIds)
+        val vendorTopologyClusters = buildVendorTopologyClusters(cpuIds, profile)
+
+        val rawClusters = when {
+            clusters.size > 1 -> clusters
+            profile.socFamily in setOf("Qualcomm", "MediaTek") && vendorTopologyClusters.size > maxOf(clusters.size, cpuPathClusters.size) -> vendorTopologyClusters
+            vendorTopologyClusters.size > clusters.size -> vendorTopologyClusters
+            cpuPathClusters.size > clusters.size -> cpuPathClusters
+            clusters.isNotEmpty() -> clusters
+            vendorTopologyClusters.isNotEmpty() -> vendorTopologyClusters
+            else -> cpuPathClusters
         }
 
-        cpuClusterCache = clusters
-        clusters
+        val deduped = rawClusters
+            .map { cluster ->
+                cluster.copy(cores = cluster.cores.distinctBy { it.id }.sortedBy { it.id })
+            }
+            .filter { it.cores.isNotEmpty() }
+            .distinctBy { cluster ->
+                val coreKey = cluster.cores.joinToString(",") { it.id.toString() }
+                coreKey
+            }
+            .sortedWith(compareBy<CpuCluster> { it.cores.firstOrNull()?.id ?: it.id }.thenBy { it.id })
+
+        cpuClusterCache = deduped
+        val clusterSummary = deduped.joinToString { cluster ->
+            val coreIds = cluster.cores.joinToString(prefix = "[", postfix = "]") { it.id.toString() }
+            "id=${cluster.id} cores=$coreIds"
+        }
+        Log.i(
+            TAG,
+            "detectCpuClusters: policy=${clusters.size} vendor=${vendorTopologyClusters.size} cpuPath=${cpuPathClusters.size} resolved=${deduped.size} -> $clusterSummary"
+        )
+        deduped
     }
 
     suspend fun readClusterGovernor(cluster: CpuCluster): String = withContext(Dispatchers.IO) {
@@ -279,14 +505,25 @@ object KernelControlEngine {
     suspend fun readClusterAvailableGovernors(cluster: CpuCluster): List<String> = withContext(Dispatchers.IO) {
         val path = cluster.availableGovsPath
             ?: "/sys/devices/system/cpu/cpu${cluster.cores.firstOrNull()?.id ?: 0}/cpufreq/scaling_available_governors"
-        read(path)?.split(" ")?.map { it.trim() }?.filter { it.isNotBlank() } ?: emptyList()
+        governorListCache[path]?.let { return@withContext it }
+        val values = read(path)
+            ?.split(" ")
+            ?.map { it.trim() }
+            ?.filter { it.isNotBlank() }
+            .orEmpty()
+        governorListCache[path] = values
+        values
     }
 
     suspend fun readClusterAvailableFreqsKHz(cluster: CpuCluster): List<Long> = withContext(Dispatchers.IO) {
         val direct = cluster.availableFreqsPath
             ?: "/sys/devices/system/cpu/cpu${cluster.cores.firstOrNull()?.id ?: 0}/cpufreq/scaling_available_frequencies"
+        freqListCache[direct]?.let { return@withContext it }
         val parsedDirect = read(direct)?.split(" ")?.mapNotNull { it.trim().toLongOrNull() }?.sorted()
-        if (!parsedDirect.isNullOrEmpty()) return@withContext parsedDirect
+        if (!parsedDirect.isNullOrEmpty()) {
+            freqListCache[direct] = parsedDirect
+            return@withContext parsedDirect
+        }
 
         val timeInState = listOf(
             "${cluster.policyPath}/stats/time_in_state",
@@ -301,17 +538,50 @@ object KernelControlEngine {
                 ?.sorted()
         }.orEmpty()
 
-        if (fromTimeInState.isNotEmpty()) return@withContext fromTimeInState
+        if (fromTimeInState.isNotEmpty()) {
+            freqListCache[direct] = fromTimeInState
+            return@withContext fromTimeInState
+        }
 
         val min = readClusterMinFreqKHz(cluster)
         val max = readClusterMaxFreqKHz(cluster)
-        if (min > 0 && max >= min) listOf(min, max).distinct().sorted() else emptyList()
+        val fallback = if (min > 0 && max >= min) listOf(min, max).distinct().sorted() else emptyList()
+        freqListCache[direct] = fallback
+        fallback
     }
 
     suspend fun readCoreOnline(core: CpuCore): Boolean = withContext(Dispatchers.IO) {
         val p = core.onlinePath ?: return@withContext true
         val v = read(p) ?: "1"
         norm(v) == "1"
+    }
+
+    suspend fun readClusterRuntimeSnapshot(cluster: CpuCluster, forceRefresh: Boolean = false): ClusterRuntimeSnapshot = withContext(Dispatchers.IO) {
+        if (!forceRefresh) {
+            clusterRuntimeCache[cluster.id]?.let { return@withContext it }
+        }
+
+        val snapshot = coroutineScope {
+            val governorDeferred = async { readClusterGovernor(cluster) }
+            val minDeferred = async { readClusterMinFreqKHz(cluster) }
+            val maxDeferred = async { readClusterMaxFreqKHz(cluster) }
+            val govListDeferred = async { readClusterAvailableGovernors(cluster) }
+            val freqListDeferred = async { readClusterAvailableFreqsKHz(cluster) }
+            val coreStatesDeferred = async { cluster.cores.map { it.id to readCoreOnline(it) } }
+
+            ClusterRuntimeSnapshot(
+                clusterId = cluster.id,
+                governor = governorDeferred.await(),
+                minKHz = minDeferred.await(),
+                maxKHz = maxDeferred.await(),
+                availableGovernors = govListDeferred.await(),
+                availableFreqsKHz = freqListDeferred.await(),
+                coreStates = coreStatesDeferred.await()
+            )
+        }
+
+        clusterRuntimeCache[cluster.id] = snapshot
+        snapshot
     }
 
     suspend fun setCoreOnline(core: CpuCore, enabled: Boolean): WriteResult = withContext(Dispatchers.IO) {
@@ -323,7 +593,11 @@ object KernelControlEngine {
     suspend fun setClusterGovernor(cluster: CpuCluster, gov: String): WriteResult = withContext(Dispatchers.IO) {
         val p = cluster.govPath
         if (p.isNullOrBlank()) return@withContext WriteResult(false, "cluster.gov", null, gov, null, null, null, "node_missing")
-        writeRaw(p, gov, "cluster.gov")
+        writeRaw(p, gov, "cluster.gov").also { if (it.ok) invalidateClusterCaches(cluster) }
+    }
+
+    suspend fun setAllClustersGovernor(clusters: List<CpuCluster>, gov: String): List<WriteResult> = coroutineScope {
+        clusters.map { cluster -> async { setClusterGovernor(cluster, gov) } }.awaitAll()
     }
 
     suspend fun setClusterFreqSafe(cluster: CpuCluster, newMinKHz: Long? = null, newMaxKHz: Long? = null): List<WriteResult> = withContext(Dispatchers.IO) {
@@ -350,6 +624,7 @@ object KernelControlEngine {
         }
         if (newMinKHz != null) results += setClusterMinFreqKHz(cluster, newMinKHz.toString())
         if (newMaxKHz != null) results += setClusterMaxFreqKHz(cluster, newMaxKHz.toString())
+        if (results.any { it.ok }) invalidateClusterCaches(cluster)
         results
     }
 
@@ -363,6 +638,18 @@ object KernelControlEngine {
         val p = cluster.maxFreqPath
         if (p.isNullOrBlank()) return@withContext WriteResult(false, "cluster.maxfreq", null, v, null, null, null, "node_missing")
         writeRaw(p, v, "cluster.maxfreq")
+    }
+
+    suspend fun applyAllClustersFreqSafe(
+        clusters: List<CpuCluster>,
+        newMinKHz: Long? = null,
+        newMaxKHz: Long? = null,
+    ): List<WriteResult> = coroutineScope {
+        clusters.map { cluster ->
+            async {
+                setClusterFreqSafe(cluster, newMinKHz = newMinKHz, newMaxKHz = newMaxKHz)
+            }
+        }.awaitAll().flatten()
     }
 
     private suspend fun hasWorkingNode(
@@ -382,21 +669,36 @@ object KernelControlEngine {
         if (forceRefresh) supportSnapshotCache = null
         supportSnapshotCache?.let { return@withContext it }
 
-        val snapshot = SupportSnapshot(
-            eas = hasWorkingNode("eas.enabled", CAND_EAS, verifyWriteNoop = false, forceRefresh = forceRefresh),
-            schedBoost = hasWorkingNode("sched.boost", CAND_SCHED_BOOST, verifyWriteNoop = false, forceRefresh = forceRefresh),
-            migrate = hasWorkingNode("sched.upmigrate", CAND_UPMIGRATE, verifyWriteNoop = false, forceRefresh = forceRefresh) &&
-                hasWorkingNode("sched.downmigrate", CAND_DOWNMIGRATE, verifyWriteNoop = false, forceRefresh = forceRefresh),
-            initTaskUtil = hasWorkingNode("sched.init_task_util", CAND_INIT_TASK_UTIL, verifyWriteNoop = false, forceRefresh = forceRefresh),
-            autoGroup = hasWorkingNode("sched.autogroup", CAND_AUTOGROUP, verifyWriteNoop = false, forceRefresh = forceRefresh),
-            capMarginUp = hasWorkingNode("sched.capacity_margin_up", CAND_CAP_MARGIN_UP, verifyWriteNoop = false, forceRefresh = forceRefresh),
-            schedutilUpRate = hasWorkingNode("schedutil.up_rate_us", CAND_SCHEDUTIL_UPRATE, verifyWriteNoop = false, forceRefresh = forceRefresh),
-            interactiveHispeed = hasWorkingNode("interactive.hispeed", CAND_INTERACTIVE_HISPEED, verifyWriteNoop = false, forceRefresh = forceRefresh),
-            touchBoost = hasWorkingNode("touchboost", CAND_TOUCHBOOST, verifyWriteNoop = false, forceRefresh = forceRefresh),
-            mcSaving = hasWorkingNode("power.mc", CAND_MC_SAVE, verifyWriteNoop = false, forceRefresh = forceRefresh),
-            powerCollapse = hasWorkingNode("power.collapse", CAND_POWER_COLLAPSE, verifyWriteNoop = false, forceRefresh = forceRefresh),
-            thermal = hasWorkingNode("thermal.enabled", CAND_THERMAL, verifyWriteNoop = false, forceRefresh = forceRefresh),
-        )
+        val snapshot = coroutineScope {
+            val eas = async { hasWorkingNode("eas.enabled", CAND_EAS, verifyWriteNoop = false, forceRefresh = forceRefresh) }
+            val schedBoost = async { hasWorkingNode("sched.boost", CAND_SCHED_BOOST, verifyWriteNoop = false, forceRefresh = forceRefresh) }
+            val upMigrate = async { hasWorkingNode("sched.upmigrate", CAND_UPMIGRATE, verifyWriteNoop = false, forceRefresh = forceRefresh) }
+            val downMigrate = async { hasWorkingNode("sched.downmigrate", CAND_DOWNMIGRATE, verifyWriteNoop = false, forceRefresh = forceRefresh) }
+            val initTaskUtil = async { hasWorkingNode("sched.init_task_util", CAND_INIT_TASK_UTIL, verifyWriteNoop = false, forceRefresh = forceRefresh) }
+            val autoGroup = async { hasWorkingNode("sched.autogroup", CAND_AUTOGROUP, verifyWriteNoop = false, forceRefresh = forceRefresh) }
+            val capMarginUp = async { hasWorkingNode("sched.capacity_margin_up", CAND_CAP_MARGIN_UP, verifyWriteNoop = false, forceRefresh = forceRefresh) }
+            val schedutilUpRate = async { hasWorkingNode("schedutil.up_rate_us", CAND_SCHEDUTIL_UPRATE, verifyWriteNoop = false, forceRefresh = forceRefresh) }
+            val interactiveHispeed = async { hasWorkingNode("interactive.hispeed", CAND_INTERACTIVE_HISPEED, verifyWriteNoop = false, forceRefresh = forceRefresh) }
+            val touchBoost = async { hasWorkingNode("touchboost", CAND_TOUCHBOOST, verifyWriteNoop = false, forceRefresh = forceRefresh) }
+            val mcSaving = async { hasWorkingNode("power.mc", CAND_MC_SAVE, verifyWriteNoop = false, forceRefresh = forceRefresh) }
+            val powerCollapse = async { hasWorkingNode("power.collapse", CAND_POWER_COLLAPSE, verifyWriteNoop = false, forceRefresh = forceRefresh) }
+            val thermal = async { hasWorkingNode("thermal.enabled", CAND_THERMAL, verifyWriteNoop = false, forceRefresh = forceRefresh) }
+
+            SupportSnapshot(
+                eas = eas.await(),
+                schedBoost = schedBoost.await(),
+                migrate = upMigrate.await() && downMigrate.await(),
+                initTaskUtil = initTaskUtil.await(),
+                autoGroup = autoGroup.await(),
+                capMarginUp = capMarginUp.await(),
+                schedutilUpRate = schedutilUpRate.await(),
+                interactiveHispeed = interactiveHispeed.await(),
+                touchBoost = touchBoost.await(),
+                mcSaving = mcSaving.await(),
+                powerCollapse = powerCollapse.await(),
+                thermal = thermal.await(),
+            )
+        }
 
         supportSnapshotCache = snapshot
         snapshot
@@ -439,7 +741,10 @@ object KernelControlEngine {
         "/sys/devices/system/cpu/cpufreq/schedutil/rate_limit_us",
         "/sys/devices/system/cpu/cpufreq/policy0/schedutil/up_rate_limit_us",
         "/sys/devices/system/cpu/cpufreq/policy4/schedutil/up_rate_limit_us",
-        "/sys/devices/system/cpu/cpufreq/policy6/schedutil/up_rate_limit_us"
+        "/sys/devices/system/cpu/cpufreq/policy6/schedutil/up_rate_limit_us",
+        "/sys/devices/system/cpu/cpu0/cpufreq/schedutil/up_rate_limit_us",
+        "/sys/devices/system/cpu/cpu4/cpufreq/schedutil/up_rate_limit_us",
+        "/sys/devices/system/cpu/cpu7/cpufreq/schedutil/up_rate_limit_us"
     )
 
     private val CAND_INTERACTIVE_HISPEED = listOf(
@@ -454,7 +759,8 @@ object KernelControlEngine {
         "/sys/module/msm_performance/parameters/touchboost",
         "/sys/module/performance/parameters/touchboost",
         "/sys/module/cpu_boost/parameters/input_boost_enabled",
-        "/sys/module/cpu_input_boost/parameters/enabled"
+        "/sys/module/cpu_input_boost/parameters/enabled",
+        "/proc/sys/kernel/pnpmgr/touch_boost_enabled"
     )
 
     private val CAND_MC_SAVE = listOf(
@@ -623,5 +929,75 @@ object KernelControlEngine {
         val p = resolveNode("thermal.enabled", CAND_THERMAL, verifyWriteNoop = true)
             ?: return@withContext WriteResult(false, "thermal.enabled", null, if (enabled) "1" else "0", null, null, null, "no_working_node")
         writeRaw(p, if (enabled) "1" else "0", "thermal.enabled").also { Log.w(TAG, it.short()) }
+    }
+
+    private fun SharedPreferences.getAnyString(vararg keys: String): String? {
+        return keys.asSequence()
+            .mapNotNull { key -> getString(key, null)?.trim()?.takeIf { it.isNotEmpty() } }
+            .firstOrNull()
+    }
+
+    suspend fun applySavedCpuTweaks(prefs: SharedPreferences): List<WriteResult> = coroutineScope {
+        val results = mutableListOf<WriteResult>()
+        val clusters = detectCpuClusters()
+        val support = getSupportSnapshot()
+
+        clusters.forEach { cluster ->
+            prefs.getAnyString("cluster_${cluster.id}_gov", "saved_governor")?.let { gov ->
+                results += setClusterGovernor(cluster, gov)
+            }
+
+            val savedMin = prefs.getAnyString("cluster_${cluster.id}_min_khz", "saved_min_freq")?.toLongOrNull()
+            val savedMax = prefs.getAnyString("cluster_${cluster.id}_max_khz", "saved_max_freq")?.toLongOrNull()
+            if (savedMin != null || savedMax != null) {
+                results += setClusterFreqSafe(cluster, newMinKHz = savedMin, newMaxKHz = savedMax)
+            }
+
+            cluster.cores.forEach { core ->
+                prefs.getAnyString("core_${core.id}_online")?.let { raw ->
+                    results += setCoreOnline(core, raw == "1")
+                }
+            }
+        }
+
+        if (support.eas) {
+            prefs.getAnyString("saved_eas_enable")?.let { results += setEasEnabled(it == "1") }
+        }
+        if (support.schedBoost) {
+            prefs.getAnyString("saved_sched_boost")?.let { results += setSchedBoost(it) }
+        }
+        if (support.migrate) {
+            prefs.getAnyString("saved_up_migrate", "saved_sched_upmigrate")?.let { results += setUpMigrate(it) }
+            prefs.getAnyString("saved_down_migrate", "saved_sched_downmigrate")?.let { results += setDownMigrate(it) }
+        }
+        if (support.initTaskUtil) {
+            prefs.getAnyString("saved_init_task_util_raw", "saved_init_task_util")?.let { results += setInitTaskUtil(it) }
+        }
+        if (support.autoGroup) {
+            prefs.getAnyString("saved_autogroup")?.let { results += setAutoGroup(it == "1") }
+        }
+        if (support.capMarginUp) {
+            prefs.getAnyString("saved_capacity_margin")?.let { results += setCapacityMargin(it) }
+        }
+        if (support.schedutilUpRate) {
+            prefs.getAnyString("saved_schedutil_up_rate", "saved_sched_uprate")?.let { results += setSchedutilUpRateUs(it) }
+        }
+        if (support.interactiveHispeed) {
+            prefs.getAnyString("saved_interactive_hispeed_khz", "saved_interactive_hispeed")?.let { results += setInteractiveHispeedFreqKHz(it) }
+        }
+        if (support.touchBoost) {
+            prefs.getAnyString("saved_touchboost")?.let { results += setTouchBoost(it == "1") }
+        }
+        if (support.mcSaving) {
+            prefs.getAnyString("saved_mc", "saved_mc_power")?.let { results += setMulticorePowerSaving(it == "1") }
+        }
+        if (support.powerCollapse) {
+            prefs.getAnyString("saved_pc", "saved_power_collapse")?.let { results += setPowerCollapse(it == "1") }
+        }
+        if (support.thermal) {
+            prefs.getAnyString("saved_thermal")?.let { results += setThermalEnabled(it == "1") }
+        }
+
+        results
     }
 }
